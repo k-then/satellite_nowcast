@@ -1,0 +1,17 @@
+# Secret API keys
+.env
+
+# Machine Learning Datasets
+data/
+*.nc
+*.dat
+
+# Python Build and Cache Files
+__pycache__/
+*.pyc
+
+# Hardware Simulation Outputs
+obj_dir/
+
+# Installer scripts
+*.sh
