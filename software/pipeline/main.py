@@ -14,7 +14,7 @@ env_path = repo_root / ".env"
 # Load the environment variables from the .env file
 load_dotenv(dotenv_path=env_path)
 
-# 5. Fetch the keys to verify they aren't empty (None)
+# Fetch the keys to verify they aren't empty (None)
 ceda_token = os.environ.get("CEDA_ACCESS_TOKEN")
 eumetsat_key = os.environ.get("EUMETSAT_CONSUMER_KEY")
 
