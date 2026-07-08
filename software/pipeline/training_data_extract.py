@@ -9,6 +9,8 @@ from pyresample import area_config
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from satpy import Scene
+import tempfile
 
 # Get the current directory of this file
 current_dir = Path(__file__).resolve().parent
@@ -109,169 +111,177 @@ def get_eumetsat_data(start="", end=""):
     return results
 
 
-def write_data(year="", month="", day="", time_hrs="", time_mins="", time_secs=""):
-    folder_path = "data/raw" # Specify the folder path where you want to save the data
+def ceda_write_data(year="", month="", day="", time_hrs="", time_mins="", time_secs=""):
     date = f"{month}{day}"  # Format the date as MMDD
     time = f"{time_hrs}{time_mins}"
     ceda_data = get_ceda_data(year, date, time)  # Example target year and time, adjust as needed
+    return ceda_data  # Return the CEDA data for further processing or saving
+
+
+def eu_write_data(year="", month="", day="", time_hrs="", time_mins="", time_secs=""):
     start_dt = datetime(int(year), int(month), int(day), int(time_hrs), int(time_mins), int(time_secs))
     end_dt = start_dt + timedelta(minutes=5)  
     eu_data = get_eumetsat_data(f'{start_dt.year:02d}-{start_dt.month:02d}-{start_dt.day:02d}T{start_dt.hour:02d}:{start_dt.minute:02d}:{start_dt.second:02d}', f'{end_dt.year:02d}-{end_dt.month:02d}-{end_dt.day:02d}T{end_dt.hour:02d}:{end_dt.minute:02d}:{end_dt.second:02d}')
 
-    # Writes the CEDA data to a file in the specified folder with a name that includes the year, date, and time.
-    ceda_filename = f"ceda_{year}{date}_{time}.dat.gz" 
-    with open(os.path.join(folder_path, ceda_filename), "wb") as f:
-        f.write(ceda_data)
-
     # Writes the EUMETSAT data to a file in the specified folder with a name that includes the year, date, and time.
     product = next(iter(eu_data))
-    eu_filename = f"eu_{year}{date}_{time}.zip" 
-    with product.open() as f_in, open(os.path.join(folder_path, eu_filename), "wb") as f_out:
-        f_out.write(f_in.read())
+    return product  # Return the EUMETSAT product for further processing or saving
 
+
+
+
+def load_nimrod_file(year, month, day, time_hrs, time_mins, time_secs):
+    """
+    Loads a NIMROD file and returns its contents as a numpy array.
+    """
+    f = ceda_write_data(year, month, day, time_hrs, time_mins, time_secs)
+    f = gzip.decompress(f)
+    header = f[:512]       # Grabs everything from index 0 up to 512
+    raw_data = f[512:]     # Grabs everything from index 512 to the very end
+    data_array = np.frombuffer(raw_data, dtype=np.int16)  # Convert the raw data to a numpy array
+    return data_array
+
+
+def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
+
+    print("--- Checking CEDA Spatial Array ---")
+    ceda_data = load_nimrod_file(year, month, day, time_hrs, time_mins, time_secs)
+    grid_data = ceda_data[:3751875].reshape(2175, 1725)
+
+    print("\n--- Checking EUMETSAT Spatial Array ---")
+    product = eu_write_data(year, month, day, time_hrs, time_mins, time_secs)
+
+    # Creates a temporary directory that deletes itself automatically
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Define the full path inside the temporary directory using a static name
+        eumetsat_path = os.path.join(tmpdir, "eumetsat_data.zip")
+        
+        # Streams the data from EUMETSAT and write it to the temp folder
+        with product.open() as f_in:
+            with open(eumetsat_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+                
+        with zipfile.ZipFile(eumetsat_path, 'r') as z:
+            # Find the file name that ends with .nat
+            nat_filename = [f for f in z.namelist() if f.endswith('.nat')][0]
+            
+            # Extract it to your data folder
+            z.extract(nat_filename, path=tmpdir)
+            temp_nat_path = Path(tmpdir) / nat_filename
+            print(f"Extracted: {nat_filename}")
+
+            # Open the zip file and list its contents
+            print("Files inside EUMETSAT zip:")
+            print(z.namelist())
+
+            print("--- Loading EUMETSAT Native File ---")
+            scn = Scene(reader="seviri_l1b_native", filenames=[temp_nat_path])
+
+            # See what channels are available in this dataset
+            print("Available channels:")
+            print(scn.available_dataset_names())
+            scn.load(['IR_108'])
+            print("Raw IR_108 shape:", scn['IR_108'].shape)
+
+            # Define the target CEDA British National Grid geometry
+            area_id = 'bng'
+            description = 'CEDA National Grid UK 1km'
+            proj_id = 'bng'
+            projection = {'init': 'epsg:27700'} # EPSG code for British National Grid
+            width = 1725
+            height = 2175
+            area_extent = [-200000, -200000, 1525000, 1975000] # Bounds in meters
+
+            target_area = area_config.get_area_def(area_id, description, proj_id, projection, width, height, area_extent)
+            print("Target area definition created successfully.")
+
+            print("--- Resampling EUMETSAT to CEDA Grid ---")
+            # Resample the satellite scene to our target British National Grid area
+            local_scn = scn.resample(target_area)
+
+            # Extract the newly aligned IR_108 data as a numpy array
+            eu_aligned_data = local_scn['IR_108'].values
     
-# Usage of the write_data function with specific year, date, and time values. Adjust these values as needed.
+    """ 
+    print("Aligned EUMETSAT shape:", eu_aligned_data.shape)
+
+    print("Minimum temperature (Kelvin):", np.nanmin(eu_aligned_data))
+    print("Maximum temperature (Kelvin):", np.nanmax(eu_aligned_data))
+
+    print("Raw Radar Min:", np.nanmin(grid_data))
+    print("Raw Radar Max:", np.nanmax(grid_data)) 
+    
+    """
+
+    # Mask out the invalid flags (set them to NaN)
+    radar_masked = np.where((grid_data >= 0) & (grid_data <= 32000), grid_data, np.nan)
+
+    # Max-Min normalise the valid weather data (0.0 to 1.0)
+    norm_radar = (radar_masked - 0) / (32000 - 0)
+    radar_plot = norm_radar.copy()
+
+    # Min-Max normalization for satellite data
+    norm_satellite = (eu_aligned_data - 200) / (310 - 200)
+    # Create a copy that keeps NaNs just for the visual plot
+    satellite_plot = norm_satellite.copy()
+
+    # Replace any NaNs resulting from normalization or missing data with 0.0
+    norm_satellite[np.isnan(norm_satellite)] = 0.0
+    norm_radar[np.isnan(norm_radar)] = 0.0
+
+    # Re-stack the cleaned layers into our final tensor
+    final_tensor = np.stack([norm_radar, norm_satellite], axis=0)
+    print("Cleaned final tensor shape:", final_tensor.shape)
+
+    # Save the Tensor to Disk 
+    output_path = f"data/training/{year}_{month}_{day}_{time_hrs}{time_mins}{time_secs}.npy"
+    np.save(output_path, final_tensor)
+    print(f"Successfully saved tensor to {output_path}")
+
+    """ # Visualize the Aligned Layers
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+
+    # Plot Normalized Radar
+    im1 = axes[0].imshow(final_tensor[0], cmap='YlOrRd', vmin=0, vmax=1)
+    axes[0].set_title("Normalized Radar Reflectivity (CEDA)")
+    fig.colorbar(im1, ax=axes[0], label="Scaled Intensity (0-1)")
+
+    # Plot Normalized Satellite
+    im2 = axes[1].imshow(satellite_plot, cmap='inferno', vmin=0, vmax=1)
+    axes[1].set_title("Normalized Infrared Temperature (EUMETSAT)")
+    fig.colorbar(im2, ax=axes[1], label="Scaled Temperature (0-1)")
+
+    plt.tight_layout()
+    plt.show()
+
+    # Use new variable names (fig2, axes2) so it doesn't overwrite Figure 1
+    fig2, axes2 = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': ccrs.OSGB()})
+
+    grid_extent = [-200000, 1525000, -200000, 1975000] 
+
+    # Plot Radar on the new axes2[0]
+    im1_map = axes2[0].imshow(radar_plot, cmap='YlOrRd', vmin=0, vmax=1, extent=grid_extent, origin='lower')
+    axes2[0].add_feature(cfeature.COASTLINE, edgecolor='black', linewidth=1)
+    axes2[0].set_title("Map Alignment: Radar Reflectivity")
+    fig2.colorbar(im1_map, ax=axes2[0], label="Scaled Intensity (0-1)")
+
+    # Plot Satellite on the new axes2[1]
+    im2_map = axes2[1].imshow(satellite_plot, cmap='inferno', vmin=0, vmax=1, extent=grid_extent, origin='lower')
+    axes2[1].add_feature(cfeature.COASTLINE, edgecolor='white', linewidth=1)
+    axes2[1].set_title("Map Alignment: Infrared Temperature")
+    fig2.colorbar(im2_map, ax=axes2[1], label="Scaled Temperature (0-1)")
+
+    plt.tight_layout()
+    plt.show()
+    plt.close() """
+
+
+# Usage of the write_data functions with specific year, date, and time values. Adjust these values as needed.
 year = "2026"
 month = "06"
 day = "15"
 time_hrs = "14"
 time_mins = "00"
 time_secs = "00"
-write_data(year, month, day, time_hrs, time_mins, time_secs)
+load_tensor_data(year, month, day, time_hrs, time_mins, time_secs)
 
-def load_nimrod_file(file_path):
-    """
-    Loads a NIMROD file and returns its contents as a numpy array.
-    """
-    with gzip.open(file_path, 'rb') as f:
-        header = f.read(512)  # Read the header (first 512 bytes)
-        raw_data = f.read()  # Read the rest of the file
-        data_array = np.frombuffer(raw_data, dtype=np.int16)  # Convert the raw data to a numpy array
-    return data_array
-
-ceda_data = load_nimrod_file("data/raw/ceda_20260615_1400.dat.gz")
-print("Total pixels loaded:", ceda_data.size)
-
-ceda_path = "data/raw/ceda_20260615_1400.dat.gz"
-eumetsat_path = "data/raw/eu_20260615_1400.dat.gz"
-
-print("--- Checking CEDA Spatial Array ---")
-ceda_data = load_nimrod_file(ceda_path)
-grid_data = ceda_data[:3751875].reshape(2175, 1725)
-print("CEDA grid matrix shape:", grid_data.shape)
-
-print("\n--- Checking EUMETSAT Spatial Array ---")
-# Open the zip file and list its contents
-with zipfile.ZipFile(eumetsat_path, 'r') as z:
-    print("Files inside EUMETSAT zip:")
-    print(z.namelist())
-
-with zipfile.ZipFile(eumetsat_path, 'r') as z:
-    # Find the file name that ends with .nat
-    nat_filename = [f for f in z.namelist() if f.endswith('.nat')][0]
-    
-    # Extract it to your data folder
-    z.extract(nat_filename, path="data/raw")
-    print(f"Extracted: {nat_filename}")
-
-from satpy import Scene
-
-# Path to the extracted .nat file inside your raw data folder
-# Note: replace the filename below if yours has a slightly different timestamp
-nat_path = f"data/raw/MSG4-SEVI-MSG15-0100-NA-20260615140417.327000000Z-NA.nat"
-
-print("--- Loading EUMETSAT Native File ---")
-scn = Scene(reader="seviri_l1b_native", filenames=[nat_path])
-
-# See what channels are available in this dataset
-print("Available channels:")
-print(scn.available_dataset_names())
-scn.load(['IR_108'])
-print("Raw IR_108 shape:", scn['IR_108'].shape)
-
-# Define the target CEDA British National Grid geometry
-area_id = 'bng'
-description = 'CEDA National Grid UK 1km'
-proj_id = 'bng'
-projection = {'init': 'epsg:27700'} # EPSG code for British National Grid
-width = 1725
-height = 2175
-area_extent = [-200000, -200000, 1525000, 1975000] # Bounds in meters
-
-target_area = area_config.get_area_def(area_id, description, proj_id, projection, width, height, area_extent)
-print("Target area definition created successfully.")
-
-print("--- Resampling EUMETSAT to CEDA Grid ---")
-# Resample the satellite scene to our target British National Grid area
-local_scn = scn.resample(target_area)
-
-# Extract the newly aligned IR_108 data as a numpy array
-eu_aligned_data = local_scn['IR_108'].values
-print("Aligned EUMETSAT shape:", eu_aligned_data.shape)
-
-print("Minimum temperature (Kelvin):", np.nanmin(eu_aligned_data))
-print("Maximum temperature (Kelvin):", np.nanmax(eu_aligned_data))
-
-print("Raw Radar Min:", np.nanmin(grid_data))
-print("Raw Radar Max:", np.nanmax(grid_data))
-
-# Mask out the invalid flags (set them to NaN)
-radar_masked = np.where((grid_data >= 0) & (grid_data <= 32000), grid_data, np.nan)
-
-# Max-Min normalise the valid weather data (0.0 to 1.0)
-norm_radar = (radar_masked - 0) / (32000 - 0)
-radar_plot = norm_radar.copy()
-
-# Min-Max normalization for satellite data
-norm_satellite = (eu_aligned_data - 200) / (310 - 200)
-# Create a copy that keeps NaNs just for the visual plot
-satellite_plot = norm_satellite.copy()
-
-# Replace any NaNs resulting from normalization or missing data with 0.0
-norm_satellite[np.isnan(norm_satellite)] = 0.0
-norm_radar[np.isnan(norm_radar)] = 0.0
-
-# Re-stack the cleaned layers into our final tensor
-final_tensor = np.stack([norm_radar, norm_satellite], axis=0)
-print("Cleaned final tensor shape:", final_tensor.shape)
-
-# Save the Tensor to Disk 
-output_path = "data/processed_tensor.npy"
-np.save(output_path, final_tensor)
-print(f"Successfully saved tensor to {output_path}")
-
-# Visualize the Aligned Layers
-fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-
-# Plot Normalized Radar
-im1 = axes[0].imshow(final_tensor[0], cmap='YlOrRd', vmin=0, vmax=1)
-axes[0].set_title("Normalized Radar Reflectivity (CEDA)")
-fig.colorbar(im1, ax=axes[0], label="Scaled Intensity (0-1)")
-
-# Plot Normalized Satellite
-im2 = axes[1].imshow(satellite_plot, cmap='inferno', vmin=0, vmax=1)
-axes[1].set_title("Normalized Infrared Temperature (EUMETSAT)")
-fig.colorbar(im2, ax=axes[1], label="Scaled Temperature (0-1)")
-
-plt.tight_layout()
-plt.show()
-
-# Use new variable names (fig2, axes2) so it doesn't overwrite Figure 1
-fig2, axes2 = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': ccrs.OSGB()})
-
-grid_extent = [-200000, 1525000, -200000, 1975000] 
-
-# Plot Radar on the new axes2[0]
-im1_map = axes2[0].imshow(radar_plot, cmap='YlOrRd', vmin=0, vmax=1, extent=grid_extent, origin='lower')
-axes2[0].add_feature(cfeature.COASTLINE, edgecolor='black', linewidth=1)
-axes2[0].set_title("Map Alignment: Radar Reflectivity")
-fig2.colorbar(im1_map, ax=axes2[0], label="Scaled Intensity (0-1)")
-
-# Plot Satellite on the new axes2[1]
-im2_map = axes2[1].imshow(satellite_plot, cmap='inferno', vmin=0, vmax=1, extent=grid_extent, origin='lower')
-axes2[1].add_feature(cfeature.COASTLINE, edgecolor='white', linewidth=1)
-axes2[1].set_title("Map Alignment: Infrared Temperature")
-fig2.colorbar(im2_map, ax=axes2[1], label="Scaled Temperature (0-1)")
-
-plt.tight_layout()
-plt.show()
