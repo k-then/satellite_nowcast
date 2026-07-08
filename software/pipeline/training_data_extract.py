@@ -277,23 +277,21 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     print("Raw Radar Max:", np.nanmax(grid_data)) 
     
     """
-    print("Raw radar percentiles:", np.nanpercentile(grid_data[grid_data >= 0], [50, 90, 99, 99.9]))
+    """ print("Raw radar percentiles:", np.nanpercentile(grid_data[grid_data >= 0], [50, 90, 99, 99.9]))
     print("Raw radar max:", grid_data.max())
     # Print the unique values that are SMALL (under 500) to see the real rain scale
-    print("Sample of real rain values:", np.unique(grid_data[grid_data < 500])[-10:])
+    print("Sample of real rain values:", np.unique(grid_data[grid_data < 500])[-10:]) """
     
-    # 1. Convert raw int16 array to float32
+    # Convert raw int16 array to float32
     radar_cleaned = grid_data.astype(np.float32)
-
-    # 2. Identify error codes and system flags (values < 0 or >= 30000)
+    # Identify error codes and system flags (values < 0 or >= 30000)
     radar_invalid = (grid_data < 0) | (grid_data >= 30000)
-    
-    # 3. Convert raw int16 array to float32 and filter flags out
-    radar_cleaned = grid_data.astype(np.float32)
     radar_cleaned[radar_invalid] = np.nan
+    # 1.0 means data is valid; 0.0 means it was a NaN or system flag
+    valid_mask = (~radar_invalid) & (~np.isnan(eu_aligned_data))
+    valid_mask = valid_mask.astype(np.float32)
 
-    # 4. Convert raw integers to physical rain rates using the official factor (divide by 32.0)
-    # A raw value of 256 now correctly maps to a solid 8.0 mm/hr rain rate!
+    # Convert raw integers to physical rain rates using the official factor (divide by 32.0)
     radar_mmhr = radar_cleaned / 32.0
 
     # 5. Use a realistic max ceiling for heavy rain (e.g., 24.0 mm/hr is an absolute downpour)
@@ -386,8 +384,8 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
 year = "2026"
 month = "07"
 day = "06"
-time_hrs = "18"
-time_mins = "00"
+time_hrs = "23"
+time_mins = "50"
 time_secs = "00"
 load_tensor_data(year, month, day, time_hrs, time_mins, time_secs)
 
