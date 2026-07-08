@@ -1,3 +1,5 @@
+from email import header
+
 import os, io, tarfile, eumdac, requests
 from pathlib import Path
 from dotenv import load_dotenv
@@ -30,6 +32,32 @@ eumetsat_key = os.environ.get("EUMETSAT_CONSUMER_KEY")
 
 print(f"CEDA Token Found: {ceda_token is not None}")
 print(f"EUMETSAT Key Found: {eumetsat_key is not None}")
+
+import struct
+
+def read_nimrod_scaling(raw_header_bytes):
+    """
+    Parses the 512-byte NIMROD binary header to extract the exact
+    dimensions, MKS scaling factor, data offset, units string, and
+    the real-world British National Grid origin/spacing.
+    """
+    num_rows = struct.unpack('>h', raw_header_bytes[34:36])[0]
+    num_cols = struct.unpack('>h', raw_header_bytes[36:38])[0]
+
+    y_origin   = struct.unpack('>f', raw_header_bytes[74:78])[0]
+    row_step   = struct.unpack('>f', raw_header_bytes[78:82])[0]
+    x_origin   = struct.unpack('>f', raw_header_bytes[82:86])[0]
+    column_step = struct.unpack('>f', raw_header_bytes[86:90])[0]
+
+    mks_scaling = struct.unpack('>f', raw_header_bytes[94:98])[0]
+    data_offset = struct.unpack('>f', raw_header_bytes[98:102])[0]
+    units = raw_header_bytes[354:362].decode('ascii', errors='ignore').strip()
+
+    print(f"[NIMROD Header] x_origin={x_origin}, y_origin={y_origin}, "
+          f"col_step={column_step}, row_step={row_step}")
+
+    return mks_scaling, data_offset, units, num_rows, num_cols, x_origin, y_origin, row_step, column_step
+
 
 def get_ceda_data(target_year="", target_date="", target_time=""):
     """
@@ -129,24 +157,62 @@ def eu_write_data(year="", month="", day="", time_hrs="", time_mins="", time_sec
 
 
 
-
 def load_nimrod_file(year, month, day, time_hrs, time_mins, time_secs):
-    """
-    Loads a NIMROD file and returns its contents as a numpy array.
-    """
     f = ceda_write_data(year, month, day, time_hrs, time_mins, time_secs)
     f = gzip.decompress(f)
-    header = f[:512]       # Grabs everything from index 0 up to 512
-    raw_data = f[512:]     # Grabs everything from index 512 to the very end
-    data_array = np.frombuffer(raw_data, dtype=np.int16)  # Convert the raw data to a numpy array
-    return data_array
+    header = f[:512]
+    raw_data = f[512:]
+    dump_real_header(header)   # <-- add this line temporarily
+
+    mks_scaling, data_offset, units, num_rows, num_cols, x_origin, y_origin, row_step, column_step = read_nimrod_scaling(header)
+    print(f"\n[NIMROD Header] Dimensions: {num_rows}x{num_cols}, Scaling: {mks_scaling}, Units: '{units}'")
+
+    data_array = np.frombuffer(raw_data, dtype=np.int16)
+    return data_array, mks_scaling, data_offset, units, num_rows, num_cols, x_origin, y_origin, row_step, column_step
+
+def dump_real_header(raw_header_bytes):
+    """Print every float32 in the real header block with its index, so we
+    can visually identify which slots actually hold x_origin/y_origin/
+    row_step/column_step."""
+    print("\n[Header Dump] Real header floats (index: value)")
+    for i in range(28):
+        offset = 66 + i * 4
+        val = struct.unpack('>f', raw_header_bytes[offset:offset+4])[0]
+        print(f"  idx {i:2d} (bytes {offset}-{offset+4}): {val}")
+
 
 
 def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
 
     print("--- Checking CEDA Spatial Array ---")
-    ceda_data = load_nimrod_file(year, month, day, time_hrs, time_mins, time_secs)
-    grid_data = ceda_data[:3751875].reshape(2175, 1725)
+    ceda_data, mks_scaling, data_offset, units, num_rows, num_cols, x_origin, y_origin, row_step, column_step = load_nimrod_file(year, month, day, time_hrs, time_mins, time_secs)
+    assert (num_rows, num_cols) == (2175, 1725), f"Unexpected grid shape: {num_rows}x{num_cols}"
+    grid_data = ceda_data[:num_rows * num_cols].reshape(num_rows, num_cols)
+
+    # Derive the true geographic extent safely using the top-down limits
+    x_min = x_origin
+    x_max = x_origin + (num_cols * column_step)
+    
+    # y_origin (1549500) represents the top edge (North maximum limit). 
+    # To find the bottom edge, we subtract the total height from the top.
+    y_top = y_origin
+    y_bot = y_origin - (num_rows * row_step)
+
+    print(f"[Debug] Calculated BNG Bounds: West={x_min}, East={x_max}, South={y_bot}, North={y_top}")
+
+    # area_extent for pyresample: [xmin, ymin, xmax, ymax] -> [West, South, East, North]
+    area_extent = [x_min, y_bot, x_max, y_top]
+    
+    # grid_extent for cartopy: [xmin, xmax, ymin, ymax] -> [West, East, South, North]
+    grid_extent = [x_min, x_max, y_bot, y_top]
+
+    print(f"[Debug] area_extent={area_extent}")
+    print(f"[Debug] grid_extent={grid_extent}")
+
+    assert all(np.isfinite(v) for v in area_extent), "area_extent contains NaN/Inf — check header byte offsets for x_origin/y_origin/row_step/column_step"
+
+    print(f"[Derived Extent] area_extent={area_extent}")
+    
 
     print("\n--- Checking EUMETSAT Spatial Array ---")
     product = eu_write_data(year, month, day, time_hrs, time_mins, time_secs)
@@ -187,12 +253,12 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
             area_id = 'bng'
             description = 'CEDA National Grid UK 1km'
             proj_id = 'bng'
-            projection = {'init': 'epsg:27700'} # EPSG code for British National Grid
-            width = 1725
-            height = 2175
-            area_extent = [-200000, -200000, 1525000, 1975000] # Bounds in meters
+            projection = {'init': 'epsg:27700'}
+            width = num_cols
+            height = num_rows
 
             target_area = area_config.get_area_def(area_id, description, proj_id, projection, width, height, area_extent)
+
             print("Target area definition created successfully.")
 
             print("--- Resampling EUMETSAT to CEDA Grid ---")
@@ -200,8 +266,7 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
             local_scn = scn.resample(target_area)
 
             # Extract the newly aligned IR_108 data as a numpy array
-            eu_aligned_data = local_scn['IR_108'].values
-    
+            eu_aligned_data = local_scn['IR_108'].values 
     """ 
     print("Aligned EUMETSAT shape:", eu_aligned_data.shape)
 
@@ -212,16 +277,40 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     print("Raw Radar Max:", np.nanmax(grid_data)) 
     
     """
+    print("Raw radar percentiles:", np.nanpercentile(grid_data[grid_data >= 0], [50, 90, 99, 99.9]))
+    print("Raw radar max:", grid_data.max())
+    # Print the unique values that are SMALL (under 500) to see the real rain scale
+    print("Sample of real rain values:", np.unique(grid_data[grid_data < 500])[-10:])
+    
+    # 1. Convert raw int16 array to float32
+    radar_cleaned = grid_data.astype(np.float32)
 
-    # Mask out the invalid flags (set them to NaN)
-    radar_masked = np.where((grid_data >= 0) & (grid_data <= 32000), grid_data, np.nan)
+    # 2. Identify error codes and system flags (values < 0 or >= 30000)
+    radar_invalid = (grid_data < 0) | (grid_data >= 30000)
+    
+    # 3. Convert raw int16 array to float32 and filter flags out
+    radar_cleaned = grid_data.astype(np.float32)
+    radar_cleaned[radar_invalid] = np.nan
 
-    # Max-Min normalise the valid weather data (0.0 to 1.0)
-    norm_radar = (radar_masked - 0) / (32000 - 0)
+    # 4. Convert raw integers to physical rain rates using the official factor (divide by 32.0)
+    # A raw value of 256 now correctly maps to a solid 8.0 mm/hr rain rate!
+    radar_mmhr = radar_cleaned / 32.0
+
+    # 5. Use a realistic max ceiling for heavy rain (e.g., 24.0 mm/hr is an absolute downpour)
+    max_physical_rain = 24.0
+    radar_clipped = np.clip(radar_mmhr, 0.0, max_physical_rain)
+
+    # 6. Normalize linearly between 0.0 and 1.0 for the ML tensor
+    norm_radar = radar_clipped / max_physical_rain
+    
+    # 7. Preserve NaNs strictly for the Cartopy plot visualization background
     radar_plot = norm_radar.copy()
+    radar_plot[radar_invalid] = np.nan
+    
 
-    # Min-Max normalization for satellite data
+    # Min-Max normalization for satellite data, clipped to a valid [0,1] range
     norm_satellite = (eu_aligned_data - 200) / (310 - 200)
+    norm_satellite = np.clip(norm_satellite, 0.0, 1.0)
     # Create a copy that keeps NaNs just for the visual plot
     satellite_plot = norm_satellite.copy()
 
@@ -238,7 +327,14 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     np.save(output_path, final_tensor)
     print(f"Successfully saved tensor to {output_path}")
 
-    """ # Visualize the Aligned Layers
+    fig, ax = plt.subplots(figsize=(8, 10))
+    ax.imshow(norm_radar, cmap='Blues', alpha=0.6)
+    ax.imshow(np.ma.masked_where(np.isnan(satellite_plot), satellite_plot), cmap='Reds', alpha=0.4)
+    ax.set_title("Overlay check: radar coverage disc should sit inside land, "
+             "not offset or flipped relative to satellite")
+    plt.show()
+
+ # Visualize the Aligned Layers
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
     # Plot Normalized Radar
@@ -257,30 +353,40 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     # Use new variable names (fig2, axes2) so it doesn't overwrite Figure 1
     fig2, axes2 = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': ccrs.OSGB()})
 
-    grid_extent = [-200000, 1525000, -200000, 1975000] 
+    # Verified real-world BNG extent for the UK 1km composite radar grid
+    x0, x1, y0, y1 = grid_extent
 
-    # Plot Radar on the new axes2[0]
-    im1_map = axes2[0].imshow(radar_plot, cmap='YlOrRd', vmin=0, vmax=1, extent=grid_extent, origin='lower')
+    # Plot Radar on axes2[0]
+    axes2[0].set_xlim(x0, x1)
+    axes2[0].set_ylim(y0, y1)
+    im1_map = axes2[0].imshow(
+        radar_plot, cmap='YlOrRd', vmin=0, vmax=1,
+        extent=grid_extent, transform=ccrs.OSGB(), origin='upper'
+    )
     axes2[0].add_feature(cfeature.COASTLINE, edgecolor='black', linewidth=1)
     axes2[0].set_title("Map Alignment: Radar Reflectivity")
     fig2.colorbar(im1_map, ax=axes2[0], label="Scaled Intensity (0-1)")
 
-    # Plot Satellite on the new axes2[1]
-    im2_map = axes2[1].imshow(satellite_plot, cmap='inferno', vmin=0, vmax=1, extent=grid_extent, origin='lower')
+    # Plot Satellite on axes2[1]
+    axes2[1].set_xlim(x0, x1)
+    axes2[1].set_ylim(y0, y1)
+    im2_map = axes2[1].imshow(
+        satellite_plot, cmap='inferno', vmin=0, vmax=1,
+        extent=grid_extent, transform=ccrs.OSGB(), origin='upper'
+    )
     axes2[1].add_feature(cfeature.COASTLINE, edgecolor='white', linewidth=1)
     axes2[1].set_title("Map Alignment: Infrared Temperature")
     fig2.colorbar(im2_map, ax=axes2[1], label="Scaled Temperature (0-1)")
 
     plt.tight_layout()
     plt.show()
-    plt.close() """
-
+    plt.close()
 
 # Usage of the write_data functions with specific year, date, and time values. Adjust these values as needed.
 year = "2026"
-month = "06"
-day = "15"
-time_hrs = "14"
+month = "07"
+day = "06"
+time_hrs = "18"
 time_mins = "00"
 time_secs = "00"
 load_tensor_data(year, month, day, time_hrs, time_mins, time_secs)
