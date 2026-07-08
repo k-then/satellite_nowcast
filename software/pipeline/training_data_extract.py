@@ -1,12 +1,6 @@
-import os
-import io
-import tarfile
+import os, io, tarfile, eumdac, requests
 from pathlib import Path
 from dotenv import load_dotenv
-import gzip
-import struct
-from pyproj import Transformer
-import eumdac
 from datetime import datetime, timedelta
 
 # Get the current directory of this file
@@ -21,16 +15,18 @@ env_path = repo_root / ".env"
 # Load the environment variables from the .env file
 load_dotenv(dotenv_path=env_path)
 
-# Fetch the keys to verify they aren't empty (None)
+# Fetch the keys to verify they aren't empty 
 ceda_token = os.environ.get("CEDA_ACCESS_TOKEN")
 eumetsat_key = os.environ.get("EUMETSAT_CONSUMER_KEY")
 
 print(f"CEDA Token Found: {ceda_token is not None}")
 print(f"EUMETSAT Key Found: {eumetsat_key is not None}")
 
-import requests
-
 def get_ceda_data(target_year="", target_date="", target_time=""):
+    """
+    Fetches data from CEDA using the provided access token.
+    Returns the data if successful, or None if there was an error.
+    """
     # Create a session container that tracks headers across requests. This is useful for maintaining authentication headers, cookies, and other session-related data across multiple requests to the same server.
     ceda_session = requests.Session()
 
@@ -44,8 +40,6 @@ def get_ceda_data(target_year="", target_date="", target_time=""):
 
     # Print the HTTP response code (200 means success, 401/403 means auth failed, 404 means not found, etc.)
     print(f"CEDA Connection Status: {response.status_code}")
-
-    # print(response.text[:1000]) # Prints the first 1000 characters of the folder listing
 
     if response.status_code == 200:
         # Wrap the raw response stream so tarfile can read it
@@ -131,7 +125,7 @@ def write_data(year="", month="", day="", time_hrs="", time_mins="", time_secs="
     
 
 
-# Usage of the write_data function with specific year, date, and time values. Adjust these values as needed for your use case.
+# Usage of the write_data function with specific year, date, and time values. Adjust these values as needed.
 year = "2026"
 month = "06"
 day = "15"
