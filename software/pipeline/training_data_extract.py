@@ -351,7 +351,7 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     plt.show()
 
     # Use new variable names (fig2, axes2) so it doesn't overwrite Figure 1
-    fig2, axes2 = plt.subplots(1, 2, figsize=(12, 6), subplot_kw={'projection': ccrs.OSGB()})
+    fig2, axes2 = plt.subplots(1, 2, figsize=(20, 12), subplot_kw={'projection': ccrs.OSGB()}, dpi=120)
 
     # Verified real-world BNG extent for the UK 1km composite radar grid
     x0, x1, y0, y1 = grid_extent
@@ -360,7 +360,7 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     axes2[0].set_xlim(x0, x1)
     axes2[0].set_ylim(y0, y1)
     im1_map = axes2[0].imshow(
-        radar_plot, cmap='YlOrRd', vmin=0, vmax=1,
+        final_tensor[0], cmap='YlOrRd', vmin=0, vmax=1,
         extent=grid_extent, transform=ccrs.OSGB(), origin='upper'
     )
     axes2[0].add_feature(cfeature.COASTLINE, edgecolor='black', linewidth=1)
@@ -371,7 +371,7 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     axes2[1].set_xlim(x0, x1)
     axes2[1].set_ylim(y0, y1)
     im2_map = axes2[1].imshow(
-        satellite_plot, cmap='inferno', vmin=0, vmax=1,
+        final_tensor[1], cmap='inferno', vmin=0, vmax=1,
         extent=grid_extent, transform=ccrs.OSGB(), origin='upper'
     )
     axes2[1].add_feature(cfeature.COASTLINE, edgecolor='white', linewidth=1)
