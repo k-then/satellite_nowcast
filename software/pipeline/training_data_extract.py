@@ -1,18 +1,18 @@
-from email import header
-
 import os, io, tarfile, eumdac, requests
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import gzip, zipfile
 import numpy as np
-import satpy
 from pyresample import area_config
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from satpy import Scene
 import tempfile
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Get the current directory of this file
 current_dir = Path(__file__).resolve().parent
@@ -64,34 +64,34 @@ def get_ceda_data(target_year="", target_date="", target_time=""):
     Fetches data from CEDA using the provided access token.
     Returns the data if successful, or None if there was an error.
     """
-    # Create a session container that tracks headers across requests. This is useful for maintaining authentication headers, cookies, and other session-related data across multiple requests to the same server.
-    ceda_session = requests.Session()
 
-    ceda_session.headers["Authorization"] = f"Bearer {ceda_token}"
+    key = (target_year, target_date)
 
-    # The URL for CEDA's archive services that will be used to extract data. This URL points to a specific dataset in the CEDA archive.
-    test_url = f"https://dap.ceda.ac.uk/badc/ukmo-nimrod/data/composite/uk-1km/{target_year}/metoffice-c-band-rain-radar_uk_{target_year}{target_date}_1km-composite.dat.gz.tar"
+    with ceda_lock:
+        if key not in ceda_tar_cache:
+            # Create a session container that tracks headers across requests. This is useful for maintaining authentication headers, cookies, and other session-related data across multiple requests to the same server.
+            ceda_session = requests.Session()
 
-    # Use your authenticated session to send a fast test request
-    response = ceda_session.get(test_url, stream=True)
+            ceda_session.headers["Authorization"] = f"Bearer {ceda_token}"
 
-    # Print the HTTP response code (200 means success, 401/403 means auth failed, 404 means not found, etc.)
-    print(f"CEDA Connection Status: {response.status_code}")
+            # The URL for CEDA's archive services that will be used to extract data. This URL points to a specific dataset in the CEDA archive.
+            test_url = f"https://dap.ceda.ac.uk/badc/ukmo-nimrod/data/composite/uk-1km/{target_year}/metoffice-c-band-rain-radar_uk_{target_year}{target_date}_1km-composite.dat.gz.tar"
 
-    if response.status_code == 200:
-        # Wrap the raw response stream so tarfile can read it
-        tar_stream = io.BytesIO(response.content) 
+            # Use your authenticated session to send a fast test request
+            response = ceda_session.get(test_url, stream=True)
 
-        with tarfile.open(fileobj=tar_stream, mode="r:") as tar:
-            # gets appropriate file name from the tar file
-            file_name = f"metoffice-c-band-rain-radar_uk_{target_year}{target_date}{target_time}_1km-composite.dat.gz"
-            member = tar.getmember(file_name) # Extract the file to the current working directory
-            extracted_file = tar.extractfile(member) # open the extracted file as a file-like object
-            output_file = extracted_file.read() # read the contents of the extracted file
-            return output_file # return the contents of the extracted file
-    else:
-        print(f"Failed to fetch data from CEDA: {response.status_code}")
-        return None
+            # Print the HTTP response code (200 means success, 401/403 means auth failed, 404 means not found, etc.)
+            print(f"CEDA Connection Status: {response.status_code}")
+
+            if response.status_code != 200:
+                print(f"Failed to fetch data from CEDA: {response.status_code}")
+                return None
+            ceda_tar_cache[key] = tarfile.open(fileobj=io.BytesIO(response.content), mode="r:")
+
+        tar = ceda_tar_cache[key]
+        file_name = f"metoffice-c-band-rain-radar_uk_{target_year}{target_date}{target_time}_1km-composite.dat.gz"
+        member = tar.getmember(file_name)
+        return tar.extractfile(member).read()
 
 
 
@@ -100,23 +100,28 @@ def get_eumetsat_token():
     Fetches an access token from EUMETSAT using the provided consumer key and secret.
     Returns the access token if successful, or None if there was an error.
     """
-    eumetsat_key = os.environ.get("EUMETSAT_CONSUMER_KEY")
-    eumetsat_secret = os.environ.get("EUMETSAT_CONSUMER_SECRET")
 
-    payload = {
-        "grant_type": "client_credentials"}
-    
-    response = requests.post(
-        "https://api.eumetsat.int/token",
-        auth=(eumetsat_key, eumetsat_secret), data=payload)
-    
-    credentials = (eumetsat_key, eumetsat_secret)
+    global eumetsat_token, eumetsat_token_expiry
 
-    if response.status_code == 200:
-        return eumdac.AccessToken(credentials)
-    else:
-        print(f"Failed to get EUMETSAT token: {response.status_code} - {response.text}")
-        return None
+    with token_lock:
+        if eumetsat_token is not None and datetime.now() < eumetsat_token_expiry:
+            return eumetsat_token
+        
+        eumetsat_key = os.environ.get("EUMETSAT_CONSUMER_KEY")
+        eumetsat_secret = os.environ.get("EUMETSAT_CONSUMER_SECRET")
+        payload = {"grant_type": "client_credentials"}
+        response = requests.post("https://api.eumetsat.int/token",auth=(eumetsat_key, eumetsat_secret), data=payload)
+        
+        credentials = (eumetsat_key, eumetsat_secret)
+
+        if response.status_code == 200:
+            eumetsat_token = eumdac.AccessToken(credentials)
+            eumetsat_token_expiry = datetime.now() + timedelta(minutes=55)
+            return eumetsat_token
+        else:
+            print(f"Failed to get EUMETSAT token: {response.status_code} - {response.text}")
+            return None
+
 
 def get_eumetsat_data(start="", end=""):
     """
@@ -185,7 +190,9 @@ def dump_real_header(raw_header_bytes):
 def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
 
     print("--- Checking CEDA Spatial Array ---")
+    t0 = time.time()
     ceda_data, mks_scaling, data_offset, units, num_rows, num_cols, x_origin, y_origin, row_step, column_step = load_nimrod_file(year, month, day, time_hrs, time_mins, time_secs)
+    print(f"[timing] CEDA fetch+parse: {time.time()-t0:.2f}s")
     assert (num_rows, num_cols) == (2175, 1725), f"Unexpected grid shape: {num_rows}x{num_cols}"
     grid_data = ceda_data[:num_rows * num_cols].reshape(num_rows, num_cols)
 
@@ -198,7 +205,6 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     y_top = y_origin
     y_bot = y_origin - (num_rows * row_step)
 
-    print(f"[Debug] Calculated BNG Bounds: West={x_min}, East={x_max}, South={y_bot}, North={y_top}")
 
     # area_extent for pyresample: [xmin, ymin, xmax, ymax] -> [West, South, East, North]
     area_extent = [x_min, y_bot, x_max, y_top]
@@ -206,16 +212,13 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     # grid_extent for cartopy: [xmin, xmax, ymin, ymax] -> [West, East, South, North]
     grid_extent = [x_min, x_max, y_bot, y_top]
 
-    print(f"[Debug] area_extent={area_extent}")
-    print(f"[Debug] grid_extent={grid_extent}")
-
     assert all(np.isfinite(v) for v in area_extent), "area_extent contains NaN/Inf — check header byte offsets for x_origin/y_origin/row_step/column_step"
 
-    print(f"[Derived Extent] area_extent={area_extent}")
     
-
     print("\n--- Checking EUMETSAT Spatial Array ---")
+    t1 = time.time()
     product = eu_write_data(year, month, day, time_hrs, time_mins, time_secs)
+    print(f"[timing] EUMETSAT search: {time.time()-t1:.2f}s")
 
     # Creates a temporary directory that deletes itself automatically
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -223,10 +226,12 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
         eumetsat_path = os.path.join(tmpdir, "eumetsat_data.zip")
         
         # Streams the data from EUMETSAT and write it to the temp folder
+        t2 = time.time()
         with product.open() as f_in:
             with open(eumetsat_path, 'wb') as f_out:
                 f_out.write(f_in.read())
-                
+        print(f"[timing] EUMETSAT download: {time.time()-t2:.2f}s")
+
         with zipfile.ZipFile(eumetsat_path, 'r') as z:
             # Find the file name that ends with .nat
             nat_filename = [f for f in z.namelist() if f.endswith('.nat')][0]
@@ -242,12 +247,13 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
 
             print("--- Loading EUMETSAT Native File ---")
             scn = Scene(reader="seviri_l1b_native", filenames=[temp_nat_path])
-
-            # See what channels are available in this dataset
-            print("Available channels:")
-            print(scn.available_dataset_names())
             scn.load(['IR_108'])
             print("Raw IR_108 shape:", scn['IR_108'].shape)
+
+            t_crop = time.time()
+            scn = scn.crop(ll_bbox=(-13.47, 47.0, 4.0, 62.7))
+            print(f"[timing] Crop: {time.time()-t_crop:.2f}s")
+            print("Cropped IR_108 shape:", scn['IR_108'].shape)
 
             # Define the target CEDA British National Grid geometry
             area_id = 'bng'
@@ -262,8 +268,9 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
             print("Target area definition created successfully.")
 
             print("--- Resampling EUMETSAT to CEDA Grid ---")
-            # Resample the satellite scene to our target British National Grid area
-            local_scn = scn.resample(target_area)
+            t_resample = time.time()
+            local_scn = scn.resample(target_area, resampler='nearest', cache_dir='/tmp/satpy_resample_cache')
+            print(f"[timing] Resample: {time.time()-t_resample:.2f}s")
 
             # Extract the newly aligned IR_108 data as a numpy array
             eu_aligned_data = local_scn['IR_108'].values 
@@ -294,14 +301,14 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     # Convert raw integers to physical rain rates using the official factor (divide by 32.0)
     radar_mmhr = radar_cleaned / 32.0
 
-    # 5. Use a realistic max ceiling for heavy rain (e.g., 24.0 mm/hr is an absolute downpour)
+    # Use a realistic max ceiling for heavy rain (e.g., 24.0 mm/hr is an absolute downpour)
     max_physical_rain = 24.0
     radar_clipped = np.clip(radar_mmhr, 0.0, max_physical_rain)
 
-    # 6. Normalize linearly between 0.0 and 1.0 for the ML tensor
+    # Normalize linearly between 0.0 and 1.0 for the ML tensor
     norm_radar = radar_clipped / max_physical_rain
     
-    # 7. Preserve NaNs strictly for the Cartopy plot visualization background
+    # Preserve NaNs strictly for the Cartopy plot visualization background
     radar_plot = norm_radar.copy()
     radar_plot[radar_invalid] = np.nan
     
@@ -317,14 +324,58 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     norm_radar[np.isnan(norm_radar)] = 0.0
 
     # Re-stack the cleaned layers into our final tensor
-    final_tensor = np.stack([norm_radar, norm_satellite], axis=0)
-    print("Cleaned final tensor shape:", final_tensor.shape)
+    final_tensor = np.stack([norm_radar, norm_satellite], axis=0).astype(np.float16)
+    print("Cleaned final tensor shape:", final_tensor.shape, final_tensor.dtype)
 
     # Save the Tensor to Disk 
-    output_path = f"data/training/{year}_{month}_{day}_{time_hrs}{time_mins}{time_secs}.npy"
-    np.save(output_path, final_tensor)
-    print(f"Successfully saved tensor to {output_path}")
+    return final_tensor
 
+    #visualize_data(norm_radar, satellite_plot, final_tensor, grid_extent)
+
+
+
+def event_dataset(storm_windows, output_dir="data/training", max_workers=1):
+    os.makedirs(output_dir, exist_ok=True)
+
+    for start, end in storm_windows:
+        event_id = f"event_{start:%Y%m%d_%H%M}_{end:%H%M}"
+        output_path = f"{output_dir}/{event_id}.npy"
+        if os.path.exists(output_path):
+            print(f"Skipping {event_id}, already exists")
+            continue
+
+        timestamps = []
+        ts = start
+        while ts <= end:
+            timestamps.append(ts)
+            ts += timedelta(minutes=5)
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(load_tensor_data, f"{t.year}", f"{t.month:02d}", f"{t.day:02d}",
+                                 f"{t.hour:02d}", f"{t.minute:02d}", "00"): t
+                for t in timestamps
+            }
+            for future in as_completed(futures):
+                t = futures[future]
+                try:
+                    results[t] = future.result()
+                except Exception as e:
+                    print(f"Failed frame {t}: {e}")
+
+        frames = [results[t] for t in timestamps if t in results]   # keep original time order
+
+        if frames:
+            sequence = np.stack(frames, axis=0)
+            np.save(output_path, sequence)
+            print(f"Saved {event_id}: {sequence.shape}, {sequence.nbytes / 1e6:.1f} MB")
+        else:
+            print(f"No frames succeeded for {event_id}, skipping save")
+
+
+# Visualises the data from a single tensor, showing the radar and satellite layers separately and overlaid, as well as their alignment on a map.
+def visualize_data(norm_radar, satellite_plot, final_tensor, grid_extent):
     fig, ax = plt.subplots(figsize=(8, 10))
     ax.imshow(norm_radar, cmap='Blues', alpha=0.6)
     ax.imshow(np.ma.masked_where(np.isnan(satellite_plot), satellite_plot), cmap='Reds', alpha=0.4)
@@ -332,16 +383,16 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
              "not offset or flipped relative to satellite")
     plt.show()
 
- # Visualize the Aligned Layers
+    # Visualize the Aligned Layers
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
-    # Plot Normalized Radar
+    # Plot Normalised Radar
     im1 = axes[0].imshow(final_tensor[0], cmap='YlOrRd', vmin=0, vmax=1)
     axes[0].set_title("Normalized Radar Reflectivity (CEDA)")
     fig.colorbar(im1, ax=axes[0], label="Scaled Intensity (0-1)")
 
-    # Plot Normalized Satellite
-    im2 = axes[1].imshow(satellite_plot, cmap='inferno', vmin=0, vmax=1)
+    # Plot Normalised Satellite
+    im2 = axes[1].imshow(final_tensor[1], cmap='inferno', vmin=0, vmax=1)
     axes[1].set_title("Normalized Infrared Temperature (EUMETSAT)")
     fig.colorbar(im2, ax=axes[1], label="Scaled Temperature (0-1)")
 
@@ -380,12 +431,22 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
     plt.show()
     plt.close()
 
-# Usage of the write_data functions with specific year, date, and time values. Adjust these values as needed.
-year = "2026"
-month = "07"
-day = "06"
-time_hrs = "23"
-time_mins = "50"
-time_secs = "00"
-load_tensor_data(year, month, day, time_hrs, time_mins, time_secs)
+
+
+ceda_tar_cache = {}
+eumetsat_token = None
+eumetsat_token_expiry = None
+DEBUG = False
+ceda_lock = threading.Lock()
+token_lock = threading.Lock()
+
+
+# Define the storm windows for which we want to extract training data
+storm_windows = [
+    (datetime(2026, 7, 6, 13, 35), datetime(2026, 7, 6, 13, 45)),
+]
+
+event_dataset(storm_windows)
+
+
 
