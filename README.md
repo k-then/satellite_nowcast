@@ -3,9 +3,9 @@
 # UK Satellite-Radar Nowcasting Pipeline
 This pipeline processes and aligns real-time meteorological observations over the UK to build high-resolution datasets for weather nowcasting. It automatically handles the spatial warping, normalisation, and temporal stacking required to feed raw satellite and radar inputs into deep learning models.
 
----
 
-## ⚡ Key Features
+
+## Key Features
 
 * **Spatial Regridding:** Automatically warps and resamples EUMETSAT geostationary satellite imagery to match the flat 1km CEDA radar grid exactly.
 * **Physical Normalization:** Scales raw physical values (Kelvin and dBZ) to a standard [0, 1] range optimized for neural networks.
@@ -14,8 +14,8 @@ This pipeline processes and aligns real-time meteorological observations over th
   * *Note:* Windows users should run this pipeline inside **WSL2 (Windows Subsystem for Linux)** for native CUDA support.
 * **Edge-Ready for FPGAs:** Preprocessed tensors are structured to allow direct deployment for low-latency inference on hardware-accelerated edge devices like FPGAs.
 
----
 
+---
 ## Data Attributions & Citations
 
 This project utilises a combination of real-time meteorological observations and static geographic datasets to train the nowcasting model.
