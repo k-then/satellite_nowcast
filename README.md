@@ -3,7 +3,7 @@
 
 ## Data Attributions & Citations
 
-This project utilizes a combination of real-time meteorological observations and static geographic datasets to train the nowcasting model.
+This project utilises a combination of real-time meteorological observations and static geographic datasets to train the nowcasting model.
 ### Dynamic Weather Datasets
 
 1. **EUMETSAT MSG SEVIRI Rapid Scan Service (RSS)**
