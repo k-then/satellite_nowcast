@@ -104,8 +104,8 @@ def get_eumetsat_token():
     global eumetsat_token, eumetsat_token_expiry
 
     with token_lock:
-        if eumetsat_token is not None and datetime.now() < eumetsat_token_expiry:
-            return eumetsat_token
+        """ if eumetsat_token is not None and datetime.now() < eumetsat_token_expiry:
+            return eumetsat_token """
         
         eumetsat_key = os.environ.get("EUMETSAT_CONSUMER_KEY")
         eumetsat_secret = os.environ.get("EUMETSAT_CONSUMER_SECRET")
@@ -334,7 +334,7 @@ def load_tensor_data(year, month, day, time_hrs, time_mins, time_secs):
 
 
 
-def event_dataset(storm_windows, output_dir="data/training", max_workers=1):
+def event_dataset(storm_windows, output_dir="data/training/dynamic_layers", max_workers=1):
     os.makedirs(output_dir, exist_ok=True)
 
     for start, end in storm_windows:
@@ -441,12 +441,87 @@ ceda_lock = threading.Lock()
 token_lock = threading.Lock()
 
 
-# Define the storm windows for which we want to extract training data
-storm_windows = [
-    (datetime(2026, 7, 6, 13, 35), datetime(2026, 7, 6, 13, 45)),
+# --- WINTER MIXED / SHOWERS (10 Windows) ---
+winter_mixed_windows = [
+    
+    # (datetime(2021, 1, 20, 6, 0), datetime(2021, 1, 20, 10, 0)),
+    # (datetime(2021, 11, 27, 12, 0), datetime(2021, 11, 27, 16, 0)),
+    # (datetime(2021, 11, 27, 18, 0), datetime(2021, 11, 27, 22, 0)),
+    # (datetime(2022, 1, 29, 6, 0), datetime(2022, 1, 29, 10, 0)),
+    # (datetime(2022, 1, 30, 20, 0), datetime(2022, 1, 31, 0, 0)),
+    # (datetime(2022, 2, 18, 8, 0), datetime(2022, 2, 18, 12, 0)),
+    # (datetime(2022, 2, 18, 13, 0), datetime(2022, 2, 18, 17, 0)),
+    # (datetime(2022, 2, 20, 9, 0), datetime(2022, 2, 20, 13, 0)),
+    # (datetime(2023, 9, 27, 10, 0), datetime(2023, 9, 27, 14, 0)),
+    # (datetime(2023, 10, 19, 12, 0), datetime(2023, 10, 19, 16, 0)),
+    # (datetime(2023, 10, 19, 18, 0), datetime(2023, 10, 19, 22, 0)),
+    # (datetime(2023, 11, 2, 10, 0), datetime(2023, 11, 2, 14, 0)),
+    # (datetime(2024, 1, 2, 8, 0), datetime(2024, 1, 2, 12, 0)),
+    # (datetime(2024, 1, 21, 10, 0), datetime(2024, 1, 21, 14, 0)),
+    # (datetime(2024, 4, 6, 8, 0), datetime(2024, 4, 6, 12, 0)),
+    # (datetime(2024, 11, 23, 9, 0), datetime(2024, 11, 23, 13, 0)),
+    
+    # (datetime(2024, 12, 7, 4, 0), datetime(2024, 12, 7, 8, 0)),
+    # (datetime(2024, 12, 7, 8, 0), datetime(2024, 12, 7, 12, 0)),
+    # (datetime(2024, 2, 15, 8, 0), datetime(2024, 2, 15, 12, 0)),
+    (datetime(2023, 9, 5, 8, 0), datetime(2023, 9, 5, 12, 0)),
+    (datetime(2023, 12, 3, 8, 0), datetime(2023, 12, 3, 12, 0)),
+    (datetime(2024, 1, 2, 8, 0), datetime(2024, 1, 2, 12, 0)),
+    (datetime(2024, 1, 5, 6, 0), datetime(2024, 1, 5, 10, 0)),
+    (datetime(2024, 5, 18, 16, 0), datetime(2024, 5, 18, 20, 0)),
+    (datetime(2024, 5, 20, 17, 0), datetime(2024, 5, 20, 21, 0)),
+    (datetime(2024, 6, 25, 13, 0), datetime(2024, 6, 25, 17, 0)),
+    (datetime(2024, 12, 7, 8, 0), datetime(2024, 12, 7, 12, 0)),
+    (datetime(2025, 1, 15, 7, 0), datetime(2025, 1, 15, 11, 0)),
+    (datetime(2025, 1, 15, 13, 0), datetime(2025, 1, 15, 17, 0)),
+    (datetime(2025, 1, 22, 10, 0), datetime(2025, 1, 22, 14, 0)),
+    (datetime(2025, 6, 25, 7, 0), datetime(2025, 6, 25, 11, 0)),
+    (datetime(2025, 11, 20, 5, 0), datetime(2025, 11, 20, 9, 0)),
+    (datetime(2026, 1, 8, 8, 0), datetime(2026, 1, 8, 12, 0)),
+    (datetime(2026, 1, 23, 12, 0), datetime(2026, 1, 23, 16, 0)),
+    (datetime(2026, 1, 24, 14, 0), datetime(2026, 1, 24, 18, 0)),
+    (datetime(2026, 2, 9, 9, 0), datetime(2026, 2, 9, 13, 0)),
+    (datetime(2026, 4, 4, 10, 0), datetime(2026, 4, 4, 14, 0)),
+    (datetime(2026, 4, 5, 13, 0), datetime(2026, 4, 5, 17, 0)),
+    (datetime(2026, 6, 22, 23, 0), datetime(2026, 6, 23, 3, 0))
+
 ]
 
-event_dataset(storm_windows)
+""" # --- CLEAR WEATHER DAYS (11 Windows) ---
+clear_weather_windows = [
+    # September Block (2023-09-05)
+    # (datetime(2023, 9, 5, 9, 0), datetime(2023, 9, 5, 13, 0)),
+    (datetime(2023, 9, 5, 14, 0), datetime(2023, 9, 5, 18, 0)),
+    
+    # Spring High Pressure (2024-04-12)
+    (datetime(2024, 4, 12, 10, 0), datetime(2024, 4, 12, 14, 0)),
+    
+    # Summer Clear Spell (2024-06-25)
+    (datetime(2024, 6, 25, 8, 0), datetime(2024, 6, 25, 12, 0)),
+    (datetime(2024, 6, 25, 13, 0), datetime(2024, 6, 25, 17, 0)),
+    
+    # Winter Anticyclone (2025-01-22)
+    (datetime(2025, 1, 22, 10, 0), datetime(2025, 1, 22, 14, 0)),
+    
+    # June Heatwave Clear Sky (2025-06-18)
+    (datetime(2025, 6, 18, 7, 0), datetime(2025, 6, 18, 11, 0)),
+    (datetime(2025, 6, 18, 12, 0), datetime(2025, 6, 18, 16, 0)),
+    
+    # Late Summer High (2025-09-02)
+    (datetime(2025, 9, 2, 9, 0), datetime(2025, 9, 2, 13, 0)),
+    (datetime(2025, 9, 2, 14, 0), datetime(2025, 9, 2, 18, 0)),
+]
+ """
+# --- Process Winter Mixed / Showers ---
+print("Processing Winter Mixed Windows...")
+for window in winter_mixed_windows:
+    # Wrap the single tuple in a list: [window]
+    event_dataset([window])
 
+""" # --- Process Clear Weather Days ---
+print("\nProcessing Clear Weather Windows...")
+for window in clear_weather_windows:
+    # Wrap the single tuple in a list: [window]
+    event_dataset([window]) """
 
 
