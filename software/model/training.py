@@ -6,7 +6,7 @@ import time
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import make_train_val_datasets
+from software.model.dataset import make_train_val_datasets
 from model import NowcastNet, weighted_rain_mse
 
 
