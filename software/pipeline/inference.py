@@ -12,26 +12,29 @@ from model import NowcastNet
 from advection import build_advection_prior
 from storm_tracking import detect_cells, classify_convective_stratiform, \
     cell_convective_fraction, label_storm_type, StormTracker
+from datetime import timezone
 
-# Grid geometry -- matches Static_tensor.py's target grid. Resolution is
-# fixed at 1000m/pixel here (the true "uk-1km" resolution) rather than
-# derived from num_rows/num_cols, since that derivation is currently swapped
-# in Static_tensor.py (see note above).
+"""
+Grid geometry -- matches Static_tensor.py's target grid. Resolution is
+fixed at 1000m/pixel here (the true "uk-1km" resolution) rather than
+derived from num_rows/num_cols, since that derivation is currently swapped
+in Static_tensor.py (see note above).
+"""
 X_MIN, Y_TOP = -404500.0, 1549500.0
 RES_M = 1000.0
 OSGB_TO_WGS84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
 
 
+# Translates a 2D grid pixel index back to physical WGS84 Latitude and Longitude coordinates.
 def pixel_to_latlon(row, col):
-    
     x = X_MIN + col * RES_M
     y = Y_TOP - row * RES_M
     lon, lat = OSGB_TO_WGS84.transform(x, y)
     return lat, lon
 
 
+# Converts 2D pixel displacement per frame step into physical Speed (km/h) and Meteorological Bearing (degrees clockwise from True North).
 def velocity_to_speed_bearing(d_row, d_col, frame_interval_minutes):
-    
     east_km = d_col * RES_M / 1000.0
     north_km = -d_row * RES_M / 1000.0
     dist_km = float(np.hypot(east_km, north_km))
@@ -41,6 +44,7 @@ def velocity_to_speed_bearing(d_row, d_col, frame_interval_minutes):
     return speed_kmh, bearing_deg
 
 
+# Loads checkpoint, retrieves saved training parameters, and builds NowcastNet in eval mode.
 def load_model(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     train_args = checkpoint.get("args", {})
@@ -55,6 +59,7 @@ def load_model(checkpoint_path, device):
     return model, train_args
 
 
+# Loads, normalizes, and stacks geographical land layers into a (3, H, W) tensor.
 def load_static_layers(static_dir):
     sea_mask = np.load(os.path.join(static_dir, "sea_mask.npy")).astype(np.float32)
     terrain = np.load(os.path.join(static_dir, "terrain.npy")).astype(np.float32)
@@ -65,6 +70,7 @@ def load_static_layers(static_dir):
     return np.stack([sea_mask, terrain_norm, land_norm], axis=0).astype(np.float32)  # (3, H, W)
 
 
+# Loads the sequential radar data array and slices the most recent t_in frames.
 def load_input_frames(event_file, t_in):
     seq = np.load(event_file)
     if seq.shape[0] < t_in:
@@ -72,6 +78,10 @@ def load_input_frames(event_file, t_in):
     return seq[-t_in:].astype(np.float32)
 
 
+"""
+Prepares input tensors, builds the advection physical prior baseline, 
+and passes them through the neural network to output the forecasted maps.
+"""
 @torch.no_grad()
 def run_forecast(model, input_frames, static_layers, device, t_out):
     
@@ -86,15 +96,21 @@ def run_forecast(model, input_frames, static_layers, device, t_out):
     return pred.squeeze(0).squeeze(1).cpu().numpy()  # (t_out, H, W)
 
 
+"""
+    Links segmented storm cells across historical and forecasted timesteps.
+    Generates velocity statistics and projected latitude/longitude coordinate points.
+"""
 def track_and_summarize(input_radar, forecast_radar, frame_interval_minutes, now=None,
                          threshold=0.1, min_area=4, max_match_distance=15.0):
     
-    now = now or datetime.utcnow()
+    now = now or datetime.now(timezone.utc)
     t_in = input_radar.shape[0]
     t_out = forecast_radar.shape[0]
     full_seq = np.concatenate([input_radar, forecast_radar], axis=0)  # (t_in + t_out, H, W)
 
     tracker = StormTracker(max_match_distance=max_match_distance)
+
+    # Steps through every frame (past and future) to construct coherent storm tracks
     for t in range(full_seq.shape[0]):
         frame = full_seq[t]
         cells = detect_cells(frame, threshold=threshold, min_area=min_area)
@@ -105,14 +121,18 @@ def track_and_summarize(input_radar, forecast_radar, frame_interval_minutes, now
         tracker.update(cells)
 
     summaries = []
+    # Analyze and serialize complete storm tracks
     for track in tracker.tracks:
         obs_now = next((h for h in track.history if h["frame"] == t_in - 1), None)
         if obs_now is None:
-            continue  # this track wasn't present "now" -- either dissipated already
-                       # or only appeared later in the forecast (a newly-triggered
-                       # cell the network predicted forming from an existing one;
-                       # still physically meaningful, but we report it separately below)
+            continue
 
+        """
+        this track wasn't present "now" -- either dissipated already
+        or only appeared later in the forecast (a newly-triggered
+        cell the network predicted forming from an existing one;
+        still physically meaningful, but we report it separately below)
+        """
         forecast_obs = [h for h in track.history if h["frame"] >= t_in]
         vr, vc = track.velocity(n_recent=3)
         speed_kmh, bearing_deg = velocity_to_speed_bearing(vr, vc, frame_interval_minutes)
@@ -143,6 +163,7 @@ def track_and_summarize(input_radar, forecast_radar, frame_interval_minutes, now
     return summaries
 
 
+# Generates and saves visual PNG plots mapping forecast frames with tracked overlays.
 def plot_forecast_maps(input_radar, forecast_radar, summaries, output_dir,
                         frame_interval_minutes, sea_mask=None):
     
@@ -163,7 +184,7 @@ def plot_forecast_maps(input_radar, forecast_radar, summaries, output_dir,
             if not points:
                 continue
             latest = points[-1]
-            # re-project the forecast lat/lon back to pixel space just for plotting
+            # re-projects the forecast lat/lon back to pixel space just for plotting
             x, y = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True).transform(
                 latest["lon"], latest["lat"]
             )
@@ -191,23 +212,31 @@ def main():
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load neural network configurations
     model, train_args = load_model(args.checkpoint, device)
     t_in = train_args.get("t_in", 4)
     t_out = train_args.get("t_out", 6)
 
+    # Reads inputs
     static_layers = load_static_layers(args.static_dir)
     input_frames = load_input_frames(args.event_file, t_in)
+
+    # Runs Nowcast model
     forecast_radar = run_forecast(model, input_frames, static_layers, device, t_out)
 
+    # Performs storm tracking on complete temporal line (historical + predicted)
     summaries = track_and_summarize(
         input_frames[:, 0], forecast_radar, args.frame_interval_minutes
     )
 
+    # Exports structured prediction metrics
     os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, "storm_summary.json"), "w") as f:
         json.dump({"generated_at_utc": datetime.utcnow().isoformat(), "storms": summaries},
                    f, indent=2)
 
+    # Renders visualizations
     plot_forecast_maps(
         input_frames[:, 0], forecast_radar, summaries, args.output_dir,
         args.frame_interval_minutes, sea_mask=static_layers[0],

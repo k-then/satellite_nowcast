@@ -3,10 +3,11 @@ import cv2
 
 
 def compute_motion_field(frame_prev, frame_curr):
-    
-    # Farneback expects 8-bit images; rescale from our [0,1] normalized
-    # rain rate. Contrast doesn't need to be perfect -- we mainly need the
-    # rain-shaped structures to be trackable, not radiometrically precise.
+    """
+    Farneback expects 8-bit images; rescale from our [0,1] normalized
+    rain rate. Contrast doesn't need to be perfect -- the
+    rain-shaped structures have to be trackable, not radiometrically precise.
+    """
     prev_u8 = np.clip(frame_prev * 255.0, 0, 255).astype(np.uint8)
     curr_u8 = np.clip(frame_curr * 255.0, 0, 255).astype(np.uint8)
 
@@ -25,7 +26,7 @@ def compute_motion_field(frame_prev, frame_curr):
 
 
 def warp_frame(frame, flow):
-    """Apply a motion field to a frame via backward warping (remap).
+    """Applys a motion field to a frame via backward warping (remap).
     frame: (H, W) float array
     flow: (H, W, 2) per-pixel (dx, dy) displacement
     Returns: (H, W) warped frame.

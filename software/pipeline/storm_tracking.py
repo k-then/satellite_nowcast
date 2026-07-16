@@ -48,10 +48,8 @@ def detect_cells(radar_frame, threshold=0.1, min_area=4):
     return cells
 
 
-# ---------------------------------------------------------------------------
-# 2. Convective / stratiform classification (Steiner et al. 1995)
-# ---------------------------------------------------------------------------
 
+# Convective / stratiform classification (Steiner et al. 1995)
 def classify_convective_stratiform(
     radar_frame,
     rain_threshold=0.1,
@@ -63,10 +61,12 @@ def classify_convective_stratiform(
     rain_mask = radar_frame >= rain_threshold
     if not rain_mask.any():
         return np.zeros_like(radar_frame, dtype=np.uint8)
-
-    # Local background: mean rain rate in a neighborhood, ignoring dry pixels
-    # so isolated cells sitting in a mostly-dry area don't get an
-    # artificially low background that makes everything look "peaked".
+    
+    """
+    Local background: mean rain rate in a neighborhood, ignoring dry pixels
+    so isolated cells sitting in a mostly-dry area don't get an
+    artificially low background that makes everything look "peaked".
+    """
     wet = radar_frame * rain_mask
     wet_count = ndimage.uniform_filter(rain_mask.astype(np.float32), size=background_radius)
     wet_sum = ndimage.uniform_filter(wet, size=background_radius)
@@ -74,9 +74,11 @@ def classify_convective_stratiform(
         wet_sum, wet_count, out=np.zeros_like(wet_sum), where=wet_count > 1e-6
     )
 
-    # Peakedness margin as a step function of background intensity: higher
-    # background -> smaller margin needed to count as a convective core.
-    # Explicit margin schedule (background level -> required peakedness):
+    """
+    Peakedness margin as a step function of background intensity: higher
+    background -> smaller margin needed to count as a convective core.
+    Explicit margin schedule (background level -> required peakedness):
+    """
     margin = np.select(
         [background >= 0.6, background >= 0.4, background >= 0.2],
         [0.10, 0.20, 0.35],
@@ -91,9 +93,11 @@ def classify_convective_stratiform(
     if not core_mask.any():
         return result
 
-    # Grow each core by an intensity-dependent influence radius using
-    # per-core dilation: cores in more intense background get a larger
-    # radius of convective influence around them.
+    """
+    Grows each core by an intensity-dependent influence radius using
+    per-core dilation: cores in more intense background get a larger
+    radius of convective influence around them.
+    """
     convective_mask = np.zeros_like(core_mask)
     remaining_cores = core_mask.copy()
     for bg_level, radius in influence_radii:
@@ -133,10 +137,8 @@ def label_storm_type(cell: Cell):
     return "mixed_convective_stratiform"
 
 
-# ---------------------------------------------------------------------------
-# 3. Tracking + trajectory extrapolation
-# ---------------------------------------------------------------------------
 
+# Tracking + trajectory extrapolation
 @dataclass
 class Track:
     track_id: int
@@ -185,9 +187,11 @@ class StormTracker:
         if active_tracks and cells:
             cost = np.zeros((len(active_tracks), len(cells)))
             for i, track in enumerate(active_tracks):
-                # predict where the track *should* be this frame using its
-                # current velocity, rather than matching against its stale
-                # last-seen position -- meaningfully better for fast movers.
+                """
+                predict where the track *should* be this frame using its
+                current velocity, rather than matching against its stale
+                last-seen position -- meaningfully better for fast movers.
+                """
                 pred = track.predict_trajectory(1)[0] if len(track.history) >= 2 else track.last_centroid
                 for j, cell in enumerate(cells):
                     dist = np.hypot(pred[0] - cell.centroid[0], pred[1] - cell.centroid[1])
@@ -234,7 +238,7 @@ class StormTracker:
         return assignments
 
     def active_tracks(self):
-        """Tracks currently being followed (seen this frame or recently)."""
+        # Tracks currently being followed (seen this frame or recently)
         return [t for t in self.tracks if t.frames_since_seen == 0]
 
 
@@ -255,9 +259,11 @@ def process_sequence(radar_sequence, threshold=0.1, min_area=4, max_match_distan
 
 
 if __name__ == "__main__":
-    # Smoke test with synthetic data: a single blob translating diagonally
-    # across 6 frames, so we can sanity-check detection + tracking + the
-    # trajectory forecast without needing real radar data on disk.
+    """
+    Smoke test with synthetic data: a single blob translating diagonally
+    across 6 frames, so we can sanity-check detection + tracking + the
+    trajectory forecast without needing real radar data on disk.
+    """
     H, W = 80, 80
     frames = []
     for t in range(6):
