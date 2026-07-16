@@ -1,11 +1,22 @@
 import torch
 import torch.nn as nn
 
-
+"""
+    ConvLSTM replaces matrix multiplications with 2D convolutions, enabling the cell 
+    to retain 2D spatial structures (like weather maps) while tracking temporal state.
+"""
 class ConvLSTMCell(nn.Module):
     def __init__(self, in_channels, hidden_channels, kernel_size=3):
         super().__init__()
+
+        # Calculates padding dynamically to keep the spatial dimensions (H, W) identical across convolutions
         padding = kernel_size // 2
+
+        """
+        # Concatenates input (x) and previous hidden state (h_prev) along the channel axis.
+        To compute all four LSTM gates simultaneously, we project this combined representation
+        into 4 * hidden_channels in a single convolution step to maximize GPU execution speed.
+        """
         self.conv = nn.Conv2d(
             in_channels + hidden_channels,
             4 * hidden_channels,
@@ -14,19 +25,34 @@ class ConvLSTMCell(nn.Module):
         )
         self.hidden_channels = hidden_channels
 
+    # Goes a step forward in time
     def forward(self, x, state):
+
         h_prev, c_prev = state
+
+        # Shape: (B, C_in + C_hidden, H, W)
         combined = torch.cat([x, h_prev], dim=1)
+
+        # Shape: (B, 4 * C_hidden, H, W)
         gates = self.conv(combined)
+
+        # Slice the tensor into 4 equal chunks along the channel dimension
+        # i: Input, f: Forget, o: Output, g: Cell input (candidate)
         i, f, o, g = torch.chunk(gates, 4, dim=1)
+
+        # Apply standard LSTM non-linear gating activations
         i = torch.sigmoid(i)
         f = torch.sigmoid(f)
         o = torch.sigmoid(o)
         g = torch.tanh(g)
+
+        # Update cell state (c) and hidden state (h)
+        # c = (Forget * History) + (Input * Candidate Updates)
         c = f * c_prev + i * g
         h = o * torch.tanh(c)
         return h, c
-
+    
+    # Initialises empty cell with zeroes
     def init_state(self, batch_size, height, width, device, dtype):
         h = torch.zeros(batch_size, self.hidden_channels, height, width, device=device, dtype=dtype)
         c = torch.zeros(batch_size, self.hidden_channels, height, width, device=device, dtype=dtype)
@@ -66,6 +92,14 @@ class ConvLSTMStack(nn.Module):
 
 
 class NowcastNet(nn.Module):
+    """
+    The main hybrid Physics-Residual Nowcasting neural network.
+    
+    Instead of predicting the complex physics of rain directly, this model uses a 
+    stacked ConvLSTM to predict a "residual change" map. It then adds this residual map
+    to a classical advection prior projection to generate physically anchored predictions.
+    """
+
     def __init__(self, dynamic_channels=2, static_channels=3,
                  hidden_channels=(32, 64, 64), forecast_steps=6, kernel_size=3):
         super().__init__()
@@ -74,8 +108,10 @@ class NowcastNet(nn.Module):
         self.static_channels = static_channels
         self.forecast_steps = forecast_steps
 
+        # Multi-layer deep spatio-temporal features processor
         self.stack = ConvLSTMStack(in_channels, list(hidden_channels), kernel_size)
 
+        # Decoder Head: Resolves hidden features + 1D advection prior back into dynamic outputs
         last_hidden = hidden_channels[-1]
         self.decoder_head = nn.Sequential(
             nn.Conv2d(last_hidden + 1, last_hidden // 2, kernel_size=3, padding=1),
@@ -84,6 +120,14 @@ class NowcastNet(nn.Module):
         )
 
     def forward(self, x, static, forecast_steps=None, advection_prior=None):
+        """
+        Args:
+            x: Historical dynamic frames. Shape: (B, T_in, C_dynamic, H, W)
+            static: Static geographic masks. Shape: (B, C_static, H, W)
+            forecast_steps: Number of future predictions. Defaults to self.forecast_steps.
+            advection_prior: Physics projections from advection.py. Shape: (B, T_out, 1, H, W)
+        """
+
         forecast_steps = forecast_steps or self.forecast_steps
         batch_size, t_in, _, height, width = x.shape
         device, dtype = x.device, x.dtype
@@ -92,15 +136,19 @@ class NowcastNet(nn.Module):
             advection_prior = torch.zeros(
                 batch_size, forecast_steps, 1, height, width, device=device, dtype=dtype
             )
-
+        
+        # Initialises hidden states for all layers in ConvLSTM stack
         states = self.stack.init_states(batch_size, height, width, device, dtype)
 
+        # Passes historical dynamic frames sequentially to build temporal context inside recurrent memory cells.
         for t in range(t_in):
             frame = torch.cat([x[:, t], static], dim=1)
             _, states = self.stack.forward_step(frame, states)
 
         outputs = []
         last_frame = x[:, -1]
+
+        # Assembles future frames with physics integration
         for step in range(forecast_steps):
             frame_in = torch.cat([last_frame, static], dim=1)
             top_h, states = self.stack.forward_step(frame_in, states)
