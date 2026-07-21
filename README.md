@@ -15,6 +15,37 @@ This pipeline processes and aligns real-time meteorological observations over th
 * **Edge-Ready for FPGAs:** Preprocessed tensors are structured to allow direct deployment for low-latency inference on hardware-accelerated edge devices like FPGAs.
 
 
+## Grid & Spatial Alignment Specifications
+
+* **Target Projection:** British National Grid (`OSGB36` / `EPSG:27700`)
+* **CEDA Radar Grid Shape:** `(2175, 1725)`
+* **Raw EUMETSAT (`IR_108`) Shape:** `(1392, 3712)` → **Aligned Shape:** `(2175, 1725)`
+
+
+## Environment & Prerequisites
+
+* **Python:** `3.13+`
+* **Geospatial Processing:** `satpy`, `pyresample`, `pyproj`
+* **Tensor Handling:** `numpy`
+* **Static Layer Retrieval:** `rasterio`, `pystac_client`
+* **Hardware Acceleration:** NVIDIA CUDA Toolkit (via WSL2 on Windows)
+
+
+## Directory Structure
+
+```text
+satellite-nowcasting/
+├── data/
+│   ├── raw/
+│   │   ├── radar/       # CEDA .tar files
+│   │   └── satellite/   # EUMETSAT files
+│   └── static_layers/   # Preprocessed DEM & land cover (.npy)
+├── src/
+│   ├── preprocess.py    # Main alignment & tensor stacking script
+│   └── visualize.py     # Spatial plotting & verification
+├── README.md
+└── requirements.txt
+```  
 ---
 ## Data Attributions & Citations
 
