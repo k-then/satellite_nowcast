@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset import make_train_val_datasets
-from model import NowcastNet, weighted_rain_mse
+from ai_weather_model import NowcastNet, weighted_rain_mse
 
 
 def parse_args():
@@ -75,14 +75,17 @@ def run_epoch(model, loader, device, optimizer=None, weight_power=2.0, amp=False
                 optimizer.zero_grad(set_to_none=True)
                 if scaler is not None:
                     scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
 
-        total_loss += loss.item()
-        n_batches += 1
+            total_loss += loss.item()
+            n_batches += 1
 
     return total_loss / max(n_batches, 1)
 
@@ -178,8 +181,8 @@ def main():
         dt = time.time() - t0
 
         current_lr = optimizer.param_groups[0]["lr"]
-        print(f"Epoch {epoch+1}/{args.epochs}  train_loss={train_loss:.5f}  "
-              f"val_loss={val_loss:.5f}  lr={current_lr:.2e}  ({dt:.1f}s)")
+        print(f"Epoch {epoch+1}/{args.epochs}  train_loss={train_loss:.10f}  "
+              f"val_loss={val_loss:.10f}  lr={current_lr:.2e}  ({dt:.1f}s)")
 
         # Saves standard checkpoints
         checkpoint = {
@@ -197,7 +200,7 @@ def main():
             best_val_loss = val_loss
             checkpoint["best_val_loss"] = best_val_loss
             torch.save(checkpoint, os.path.join(args.checkpoint_dir, "best.pt"))
-            print(f"  -> new best model saved (val_loss={val_loss:.5f})")
+            print(f"  -> new best model saved (val_loss={val_loss:.10f})")
 
 
 if __name__ == "__main__":

@@ -96,7 +96,7 @@ def visualise_data(mask_tensor, ter_tens, land_cover_matrix, grid_extent):
 def generate_mask_grid():
     # Dimensions from your specification
     num_rows, num_cols = 2175, 1725
-    x_min, x_max, y_bot, y_top = -404500.0, 1770500.0, -175500.0, 1549500.0
+    x_min, x_max, y_bot, y_top = -404500.0, 1320500.0, -625500.0, 1549500.0
 
     # Calculates pixel resolution (1000 meters per pixel)
     res_x = (x_max - x_min) / num_cols
@@ -119,7 +119,7 @@ def generate_mask_grid():
     mask_tensor = rasterize(
         shapes=geoms_osgb,
         out_shape=(num_rows, num_cols),
-        transform=transform,
+        transform= transform,
         fill=0.0,       # Background value (sea)
         default_value=1.0,  # Value for inside the shapes (land)
         dtype=np.float16
@@ -143,7 +143,7 @@ def latlon_to_tile(lon, lat, zoom):
 
 def generate_terrain_tensor():
     NUM_ROWS, NUM_COLS = 2175, 1725
-    X_MIN, X_MAX, Y_BOT, Y_TOP = -404500.0, 1770500.0, -175500.0, 1549500.0
+    X_MIN, X_MAX, Y_BOT, Y_TOP = -404500.0, 1320500.0, -625500.0, 1549500.0
 
     RES_X = (X_MAX - X_MIN) / NUM_COLS
     RES_Y = (Y_TOP - Y_BOT) / NUM_ROWS
@@ -205,8 +205,8 @@ def generate_terrain_tensor():
 
 def generate_land_type():
     # Target OSGB36 Grid Parameters
-    X_MIN, X_MAX = -404500.0, 1770500.0
-    Y_MIN, Y_MAX = -175500.0, 1549500.0
+    X_MIN, X_MAX = -404500.0, 1320500.0
+    Y_MIN, Y_MAX = -625500.0, 1549500.0
     NUM_ROWS, NUM_COLS = 2175, 1725
     
     # Converts OSGB36 bounds to WGS84 for the STAC API query
@@ -272,9 +272,23 @@ def generate_land_type():
 
     return land_cover_matrix
 
+def get_wgs_bbox(x_min, x_max, y_bot, y_top):
+    transformer = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
+    # Convert all 4 corners: NW, NE, SW, SE
+    lons, lats = transformer.transform(
+        [x_min, x_max, x_min, x_max], 
+        [y_top, y_top, y_bot, y_bot]
+    )
+    return min(lons), min(lats), max(lons), max(lats)
 
 
-uk_extent = [-404500.0, 1770500.0, -175500.0, 1549500.0]
+# Inside generate_land_type() and generate_terrain_tensor():
+uk_extent = [-404500.0, 1320500.0, -625500.0, 1549500.0]
+# lon_min, lat_min, lon_max, lat_max = get_wgs_bbox(uk_extent)
+# wgs84_bbox = [lon_min, lat_min, lon_max, lat_max]
+
+
+
 
 visualise_data(generate_mask_grid(), generate_terrain_tensor(), generate_land_type(), uk_extent)
 

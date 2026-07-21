@@ -61,6 +61,9 @@ class NowcastDataset(Dataset):
                 "Did Training_data_extract.py finish running?"
             )
         
+        mask_cache_path = os.path.join(static_dir, "bad_pixel_mask.npy")
+        self.bad_pixel_mask = self._build_bad_pixel_mask(cache_path=mask_cache_path)
+        
         # Physical flow requires at least two historic steps to measure velocity vectors
         if self.use_advection_prior and t_in < 2:
             raise ValueError("use_advection_prior needs t_in >= 2 (motion requires two frames)")
@@ -147,7 +150,31 @@ class NowcastDataset(Dataset):
             left = (width - p) // 2
         return top, left, top + p, left + p
 
+    def _build_bad_pixel_mask(self, threshold=0.5, cache_path=None):
+        """
+        Scans all event files to find pixels that are suspiciously maxed-out
+        (near 1.0) across most frames and most events and filters them out
+        """
+        if cache_path is not None and os.path.exists(cache_path):
+            return np.load(cache_path)
 
+        sum_stuck_frac = None
+        n_events = 0
+        for f in self.event_files:
+            seq = np.load(f, mmap_mode="r")
+            radar = seq[:, 0]
+            frac = (radar >= 0.999).mean(axis=0)
+            if sum_stuck_frac is None:
+                sum_stuck_frac = np.zeros_like(frac, dtype=np.float64)
+            sum_stuck_frac += frac
+            n_events += 1
+
+        bad_pixel_mask = (sum_stuck_frac / n_events) > threshold
+
+        if cache_path is not None:
+            np.save(cache_path, bad_pixel_mask)
+
+        return bad_pixel_mask
 
     def __getitem__(self, idx):
         event_idx = idx // self.samples_per_event
@@ -181,6 +208,8 @@ class NowcastDataset(Dataset):
  
             top, left, bottom, right = self._random_crop_bounds(self.grid_h, self.grid_w)
             candidate = frames[:, :, top:bottom, left:right].astype(np.float32)
+            mask_crop = self.bad_pixel_mask[top:bottom, left:right]
+            candidate[:, 0][:, mask_crop] = 0.0
             static_crop = self.static_full[:, top:bottom, left:right]
  
             if not self._window_has_gap(candidate[:, 0]):

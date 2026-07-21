@@ -101,8 +101,9 @@ class NowcastNet(nn.Module):
     """
 
     def __init__(self, dynamic_channels=2, static_channels=3,
-                 hidden_channels=(32, 64, 64), forecast_steps=6, kernel_size=3):
+                 hidden_channels=(32, 64, 64), forecast_steps=6, kernel_size=3, residual_scale=1.0):
         super().__init__()
+        self.residual_scale = residual_scale
         in_channels = dynamic_channels + static_channels
         self.dynamic_channels = dynamic_channels
         self.static_channels = static_channels
@@ -158,7 +159,7 @@ class NowcastNet(nn.Module):
             residual = self.decoder_head(decoder_in)  # (B, dynamic_channels, H, W)
 
             pred = residual.clone()
-            pred[:, 0:1] = torch.clamp(residual[:, 0:1] + prior_t, 0.0, 1.0)  # radar = prior + residual
+            pred[:, 0:1] = torch.clamp(self.residual_scale * residual[:, 0:1] + prior_t, 0.0, 1.0)  # radar = prior + residual
             pred[:, 1:] = torch.sigmoid(residual[:, 1:])  # non-radar channels (satellite) have no prior
 
             outputs.append(pred)

@@ -1,19 +1,23 @@
-
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import argparse
 import json
-import os
 from datetime import datetime, timedelta
 
 import numpy as np
 import torch
 from pyproj import Transformer
 
-from model import NowcastNet
+from ai_weather_model import NowcastNet
 from advection import build_advection_prior
-from software.model.storm_tracking import detect_cells, classify_convective_stratiform, \
+from storm_tracking import detect_cells, classify_convective_stratiform, \
     cell_convective_fraction, label_storm_type, StormTracker
 from datetime import timezone
 
+RES_X_STATIC = 2175000 / 1725
+RES_Y_STATIC = 1725000 / 2175 
+STATIC_ASPECT = RES_X_STATIC / RES_Y_STATIC
 """
 Grid geometry -- matches Static_tensor.py's target grid. Resolution is
 fixed at 1000m/pixel here (the true "uk-1km" resolution) rather than
@@ -45,7 +49,7 @@ def velocity_to_speed_bearing(d_row, d_col, frame_interval_minutes):
 
 
 # Loads checkpoint, retrieves saved training parameters, and builds NowcastNet in eval mode.
-def load_model(checkpoint_path, device):
+def load_model(checkpoint_path, device, residual_scale=0.7):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     train_args = checkpoint.get("args", {})
     model = NowcastNet(
@@ -53,6 +57,7 @@ def load_model(checkpoint_path, device):
         static_channels=3,
         hidden_channels=tuple(train_args.get("hidden_channels", [32, 64, 64])),
         forecast_steps=train_args.get("t_out", 6),
+        residual_scale=residual_scale,
     ).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
@@ -60,22 +65,44 @@ def load_model(checkpoint_path, device):
 
 
 # Loads, normalizes, and stacks geographical land layers into a (3, H, W) tensor.
-def load_static_layers(static_dir):
+def load_static_layers(static_dir, target_shape=None):
     sea_mask = np.load(os.path.join(static_dir, "sea_mask.npy")).astype(np.float32)
     terrain = np.load(os.path.join(static_dir, "terrain.npy")).astype(np.float32)
     land_type = np.load(os.path.join(static_dir, "land_type.npy")).astype(np.float32)
+    # Automatically fix transposed dimensions if target_shape (H, W) is provided
+    if target_shape is not None:
+        target_h, target_w = target_shape
+        if sea_mask.shape == (target_w, target_h):
+            sea_mask = sea_mask.T
+            terrain = terrain.T
+            land_type = land_type.T
+
     terrain_norm = np.clip(terrain, 0.0, 1350.0) / 1350.0
     lt_min, lt_max = land_type.min(), land_type.max()
     land_norm = (land_type - lt_min) / max(lt_max - lt_min, 1e-6)
-    return np.stack([sea_mask, terrain_norm, land_norm], axis=0).astype(np.float32)  # (3, H, W)
+
+    return np.stack([sea_mask, terrain_norm, land_norm], axis=0).astype(np.float32)
 
 
 # Loads the sequential radar data array and slices the most recent t_in frames.
-def load_input_frames(event_file, t_in):
+def load_input_frames(event_file, t_in, t_out=None, start=None):
     seq = np.load(event_file)
-    if seq.shape[0] < t_in:
-        raise ValueError(f"{event_file} has only {seq.shape[0]} frames, need >= {t_in}")
-    return seq[-t_in:].astype(np.float32)
+    total_t = seq.shape[0]
+
+    if start is None:
+        if seq.shape[0] < t_in:
+            raise ValueError(f"{event_file} has only {seq.shape[0]} frames, need >= {t_in}")
+        return seq[-t_in:].astype(np.float32), None
+
+    if start < t_in or (t_out is not None and start + t_out > total_t):
+        raise ValueError(
+            f"start={start} invalid for t_in={t_in}, t_out={t_out}, total_t={total_t}. "
+            f"Need start >= {t_in} and start + t_out <= {total_t}."
+        )
+
+    input_frames = seq[start - t_in:start].astype(np.float32)
+    true_future = seq[start:start + t_out, 0].astype(np.float32) if t_out else None
+    return input_frames, true_future
 
 
 """
@@ -163,67 +190,170 @@ def track_and_summarize(input_radar, forecast_radar, frame_interval_minutes, now
     return summaries
 
 
-# Generates and saves visual PNG plots mapping forecast frames with tracked overlays.
 def plot_forecast_maps(input_radar, forecast_radar, summaries, output_dir,
-                        frame_interval_minutes, sea_mask=None):
-    
+                        frame_interval_minutes, sea_mask=None, true_future=None):
     import matplotlib.pyplot as plt
 
     os.makedirs(output_dir, exist_ok=True)
+    t_in = input_radar.shape[0]
     t_out = forecast_radar.shape[0]
 
-    for t in range(t_out):
-        fig, ax = plt.subplots(figsize=(8, 10))
+    def draw_panel(ax, radar_frame, sea_mask, title):
+        ax.imshow(radar_frame, cmap="YlOrRd", vmin=0, vmax=1, alpha=0.85, origin="upper")
         if sea_mask is not None:
-            ax.imshow(sea_mask, cmap="Greys", alpha=0.15)
-        ax.imshow(forecast_radar[t], cmap="YlOrRd", vmin=0, vmax=1, alpha=0.85)
+            # Match contour origin to imshow ('upper') so features line up properly!
+            ax.contour(sea_mask, levels=[0.5], colors="black", linewidths=0.8, origin="lower")
+            ax.set_aspect('equal')
+        
+        # 🔍 Set view window to UK pixels
+        ax.set_xlim(405, 1105)
+        ax.set_ylim(1550, 350)  # Note: 1550 first keeps North (row 350) at the top
+        
+        ax.set_title(title, fontsize=9)
+        ax.axis("off")
 
+
+    ncols_forecast = 2 if true_future is not None else 1
+    total_rows = 1 + t_out
+    fig, axes = plt.subplots(total_rows, max(t_in, ncols_forecast),
+                              figsize=(4 * max(t_in, ncols_forecast), 5 * total_rows))
+
+    for t in range(t_in):
+        eta_min = (t - t_in + 1) * frame_interval_minutes
+        draw_panel(axes[0, t], input_radar[t], sea_mask, f"Input t{eta_min:+d} min")
+    for t in range(t_in, axes.shape[1]):
+        axes[0, t].axis("off")
+
+    for t in range(t_out):
         eta_min = (t + 1) * frame_interval_minutes
+        row = t + 1
+
+        ax_pred = axes[row, 0]
+        draw_panel(ax_pred, forecast_radar[t], sea_mask, f"PREDICTED t+{eta_min} min")
         for storm in summaries:
             points = [p for p in storm["forecast_track"] if p["eta_minutes"] <= eta_min]
             if not points:
                 continue
             latest = points[-1]
-            # re-projects the forecast lat/lon back to pixel space just for plotting
             x, y = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True).transform(
                 latest["lon"], latest["lat"]
             )
             col = (x - X_MIN) / RES_M
-            row = (Y_TOP - y) / RES_M
-            ax.plot(col, row, marker="x", color="blue", markersize=10, mew=2)
-            ax.annotate(f"#{storm['track_id']} {storm['storm_type']}",
-                        (col, row), color="blue", fontsize=8, xytext=(5, 5),
-                        textcoords="offset points")
+            r = (Y_TOP - y) / RES_M
+            ax_pred.plot(col, r, marker="x", color="blue", markersize=8, mew=1.5)
 
-        ax.set_title(f"Forecast t+{eta_min} min")
-        ax.axis("off")
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f"forecast_t{eta_min:03d}min.png"), dpi=120)
-        plt.close(fig)
+        if true_future is not None:
+            ax_actual = axes[row, 1]
+            draw_panel(ax_actual, true_future[t], sea_mask, f"ACTUAL t+{eta_min} min")
+
+        for c in range(ncols_forecast, axes.shape[1]):
+            axes[row, c].axis("off")
+
+    if true_future is not None:
+        print("True future shape:", true_future.shape)
+    print("--------------------------")
+    plt.savefig(os.path.join(output_dir, "forecast_comparison.png"), dpi=120)
+    plt.close(fig)
+
+
+
+def tiled_run_forecast(model, inp_frames, static_layers, device, t_out, tile_size=128, overlap=32):
+    """
+    Runs model over full grid in overlapping tiles and results
+    are stitched together to avoid processing whole grid
+    at once.
+    """
+    _,_, full_h, full_w = inp_frames.shape
+    stride = tile_size - overlap
+
+    output = np.zeros((t_out, full_h, full_w), dtype=np.float32)
+    weight = np.zeros((full_h, full_w), dtype=np.float32)
+
+    ramp = np.minimum(np.arange(tile_size) + 1, tile_size - np.arange(tile_size))
+    blend_1d = np.clip(ramp / (overlap + 1), 0, 1) if overlap > 0 else np.ones(tile_size)
+    blend_2d = np.outer(blend_1d, blend_1d).astype(np.float32)
+
+    tops = list(range(0, full_h - tile_size + 1, stride))
+    if tops[-1] != full_h - tile_size:
+        tops.append(full_h - tile_size)
+    lefts = list(range(0, full_w - tile_size + 1, stride))
+    if lefts[-1] != full_w - tile_size:
+        lefts.append(full_w - tile_size)
+
+    total_tiles = len(tops) * len(lefts)
+    done = 0
+    for top in tops:
+        for left in lefts:
+            done += 1
+            print(f"Tile {done}/{total_tiles} (row={top}, col={left})")
+
+            frame_tile = inp_frames[:, :, top:top+tile_size, left:left+tile_size]
+            static_tile = static_layers[:, top:top+tile_size, left:left+tile_size]
+
+            radar_prev = frame_tile[-2, 0]
+            radar_curr = frame_tile[-1, 0]
+            prior = build_advection_prior(radar_prev, radar_curr, t_out)
+
+            x = torch.from_numpy(frame_tile).unsqueeze(0).to(device)
+            static_t = torch.from_numpy(static_tile).unsqueeze(0).to(device)
+            prior_t = torch.from_numpy(prior[:, None]).unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                pred = model(x, static_t, forecast_steps=t_out, advection_prior=prior_t)
+            pred_np = pred.squeeze(0).squeeze(1).cpu().numpy()  # (t_out, tile_size, tile_size)
+
+            for t in range(t_out):
+                output[t, top:top+tile_size, left:left+tile_size] += pred_np[t] * blend_2d
+            weight[top:top+tile_size, left:left+tile_size] += blend_2d
+
+            # free GPU memory between tiles
+            del x, static_t, prior_t, pred
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+    weight = np.maximum(weight, 1e-6)
+    output = output / weight[None, :, :]
+    return output  # (t_out, H, W)
+
 
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument("--start-frame", type=int, default=None,
+               help="frame index to treat as 'now' -- lets you compare forecast vs real future frames")
     p.add_argument("--checkpoint", default="checkpoints/best.pt")
     p.add_argument("--event-file", required=True)
     p.add_argument("--static-dir", default="data/training/static_layers")
     p.add_argument("--output-dir", default="forecast_output")
     p.add_argument("--frame-interval-minutes", type=int, default=5)
+    p.add_argument("--residual-scale", type=float, default=1.0,
+               help="scales the neural network's correction relative to the physics prior; "
+                    "1.0 = no dampening (default), lower values trust the physics prior more")
     args = p.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
 
     # Load neural network configurations
-    model, train_args = load_model(args.checkpoint, device)
+    model, train_args = load_model(args.checkpoint, device, residual_scale=args.residual_scale)
     t_in = train_args.get("t_in", 4)
     t_out = train_args.get("t_out", 6)
 
     # Reads inputs
     static_layers = load_static_layers(args.static_dir)
-    input_frames = load_input_frames(args.event_file, t_in)
+    input_frames, true_future = load_input_frames(args.event_file, t_in, t_out, start=args.start_frame)
+    bad_pixel_mask = np.load(os.path.join(args.static_dir, "bad_pixel_mask.npy"))
+    input_frames[:, 0][:, bad_pixel_mask] = 0.0
 
     # Runs Nowcast model
-    forecast_radar = run_forecast(model, input_frames, static_layers, device, t_out)
+    forecast_radar = tiled_run_forecast(model, input_frames, static_layers, device, t_out, tile_size=128, overlap=32)
+
+    if true_future is not None:
+        mse_per_step = ((forecast_radar - true_future) ** 2).mean(axis=(1, 2))
+        overall_mse = mse_per_step.mean()
+        print(f"\n--- Forecast accuracy (residual_scale={args.residual_scale}) ---")
+        for t, mse in enumerate(mse_per_step):
+            print(f"  step {t+1} (t+{(t+1)*args.frame_interval_minutes}min): MSE={mse:.6f}")
+        print(f"  overall MSE: {overall_mse:.6f}")
 
     # Performs storm tracking on complete temporal line (historical + predicted)
     summaries = track_and_summarize(
@@ -239,7 +369,7 @@ def main():
     # Renders visualizations
     plot_forecast_maps(
         input_frames[:, 0], forecast_radar, summaries, args.output_dir,
-        args.frame_interval_minutes, sea_mask=static_layers[0],
+        args.frame_interval_minutes, sea_mask=static_layers[0], true_future=true_future
     )
 
     print(f"Wrote {len(summaries)} storm summaries and {t_out} forecast maps to {args.output_dir}/")
