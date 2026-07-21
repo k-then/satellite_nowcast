@@ -35,37 +35,37 @@ This pipeline processes and aligns real-time meteorological observations over th
 
 ```text
 satellite_nowcast/
-├── 📁 checkpoints_v6/
-├── 📁 data/
-│   ├── 📁 raw/
-│   └── 📁 training/
-│       ├── 📁 dynamic_layers/
-│       └── 📁 static_layers/
-├── 📁 env_satellite/
-├── 📁 forecast_output_v6/
-│   ├── 🖼️ forecast_comparison.png
-│   └── 📄 storm_summary.json
-├── 📁 hardware/
-│   ├── 📁 rtl/
-│   └── 📁 tb/
-├── 📁 software/
-│   ├── 📁 model/
-│   │   ├── 📁 __pycache__/
-│   │   ├── 📁 checkpoints/
-│   │   ├── 🐍 advection.py
-│   │   ├── 🐍 ai_weather_model.py
-│   │   ├── 🐍 dataset.py
-│   │   ├── 🐍 inference.py
-│   │   ├── 🐍 storm_tracking.py
-│   │   └── 🐍 training.py
-│   └── 📁 pipeline/
-│       ├── 📁 __pycache__/
-│       ├── 🐍 static_tensor.py
-│       └── 🐍 training_data_extract.py
-├── ⚙️ .env
-├── 📄 .gitignore
-├── 📜 Miniconda3-latest-Linux-x86_64.sh
-└── 📄 README.md
+├── checkpoints_v6/
+├── data/
+│   ├── raw/
+│   └── training/
+│       ├── dynamic_layers/
+│       └── static_layers/
+├── env_satellite/
+├── forecast_output_v6/
+│   ├── forecast_comparison.png
+│   └── storm_summary.json
+├── hardware/
+│   ├── rtl/
+│   └── tb/
+├── software/
+│   ├── model/
+│   │   ├── __pycache__/
+│   │   ├── checkpoints/
+│   │   ├── advection.py
+│   │   ├── ai_weather_model.py
+│   │   ├── dataset.py
+│   │   ├── inference.py
+│   │   ├── storm_tracking.py
+│   │   └── training.py
+│   └── pipeline/
+│       ├── __pycache__/
+│       ├── static_tensor.py
+│       └── training_data_extract.py
+├── .env
+├── .gitignore
+├── Miniconda3-latest-Linux-x86_64.sh
+└── README.md
 ```  
 ---
 ## Data Attributions & Citations
