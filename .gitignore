@@ -16,5 +16,6 @@ obj_dir/
 # Installer scripts
 *.sh
 
-# checkpoints
+# checkpoints and forecasts
 checkpoints_v6/
+forecast_output_v6/
