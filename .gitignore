@@ -15,3 +15,6 @@ obj_dir/
 
 # Installer scripts
 *.sh
+
+# checkpoints
+checkpoints_v6/
