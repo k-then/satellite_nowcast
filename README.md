@@ -1,5 +1,3 @@
-# Satellite Nowcasting Project
-
 # UK Satellite-Radar Nowcasting Pipeline
 This pipeline processes and aligns real-time meteorological observations over the UK to build high-resolution datasets for weather nowcasting. It automatically handles the spatial warping, normalisation, and temporal stacking required to feed raw satellite and radar inputs into deep learning models.
 
@@ -15,14 +13,14 @@ This pipeline processes and aligns real-time meteorological observations over th
 * **Edge-Ready for FPGAs:** Preprocessed tensors are structured to allow direct deployment for low-latency inference on hardware-accelerated edge devices like FPGAs.
 
 
-## Grid & Spatial Alignment Specifications
+#### Grid & Spatial Alignment Specifications
 
 * **Target Projection:** British National Grid (`OSGB36` / `EPSG:27700`)
 * **CEDA Radar Grid Shape:** `(2175, 1725)`
 * **Raw EUMETSAT (`IR_108`) Shape:** `(1392, 3712)` → **Aligned Shape:** `(2175, 1725)`
 
 
-## Environment & Prerequisites
+#### Environment & Prerequisites
 
 * **Python:** `3.13+`
 * **Geospatial Processing:** `satpy`, `pyresample`, `pyproj`
@@ -31,20 +29,41 @@ This pipeline processes and aligns real-time meteorological observations over th
 * **Hardware Acceleration:** NVIDIA CUDA Toolkit (via WSL2 on Windows)
 
 
-## Directory Structure
+#### Directory Structure
 
 ```text
-satellite-nowcasting/
+satellite_nowcast/
+├── checkpoints_v6/
 ├── data/
 │   ├── raw/
-│   │   ├── radar/       # CEDA .tar files
-│   │   └── satellite/   # EUMETSAT files
-│   └── static_layers/   # Preprocessed DEM & land cover (.npy)
-├── src/
-│   ├── preprocess.py    # Main alignment & tensor stacking script
-│   └── visualize.py     # Spatial plotting & verification
-├── README.md
-└── requirements.txt
+│   └── training/
+│       ├── dynamic_layers/
+│       └── static_layers/
+├── env_satellite/
+├── forecast_output_v6/
+│   ├── forecast_comparison.png
+│   └── storm_summary.json
+├── hardware/
+│   ├── rtl/
+│   └── tb/
+├── software/
+│   ├── model/
+│   │   ├── __pycache__/
+│   │   ├── checkpoints/
+│   │   ├── advection.py
+│   │   ├── ai_weather_model.py
+│   │   ├── dataset.py
+│   │   ├── inference.py
+│   │   ├── storm_tracking.py
+│   │   └── training.py
+│   └── pipeline/
+│       ├── __pycache__/
+│       ├── static_tensor.py
+│       └── training_data_extract.py
+├── .env
+├── .gitignore
+├── Miniconda3-latest-Linux-x86_64.sh
+└── README.md
 ```  
 ---
 ## Data Attributions & Citations
