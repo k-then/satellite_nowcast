@@ -29,6 +29,21 @@ RES_M = 1000.0
 OSGB_TO_WGS84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
 
 
+activation_stats = {}
+
+def hook_fn(name):
+    def hook(_, __, output_tensor):
+        # Handle tuple outputs (e.g., ConvLSTM returning (h, c) or lists)
+        if isinstance(output_tensor, (tuple, list)):
+            out = output_tensor[0]
+        else:
+            out = output_tensor
+
+        if isinstance(out, torch.Tensor):
+            abs_max = out.detach().abs().max().item()
+            activation_stats[name] = max(activation_stats.get(name, 0.0), abs_max)
+    return hook
+
 # Translates a 2D grid pixel index back to physical WGS84 Latitude and Longitude coordinates.
 def pixel_to_latlon(row, col):
     x = X_MIN + col * RES_M
@@ -338,6 +353,10 @@ def main():
     t_in = train_args.get("t_in", 4)
     t_out = train_args.get("t_out", 6)
 
+    for name, module in model.named_modules():
+        if name != "":
+            module.register_forward_hook(hook_fn(name))
+
     # Reads inputs
     static_layers = load_static_layers(args.static_dir)
     input_frames, true_future = load_input_frames(args.event_file, t_in, t_out, start=args.start_frame)
@@ -363,7 +382,7 @@ def main():
     # Exports structured prediction metrics
     os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, "storm_summary.json"), "w") as f:
-        json.dump({"generated_at_utc": datetime.utcnow().isoformat(), "storms": summaries},
+        json.dump({"generated_at_utc": datetime.now(timezone.utc).isoformat(), "storms": summaries},
                    f, indent=2)
 
     # Renders visualizations
@@ -374,6 +393,14 @@ def main():
 
     print(f"Wrote {len(summaries)} storm summaries and {t_out} forecast maps to {args.output_dir}/")
 
+    print("\n" + "=" * 65)
+    print(" DYNAMIC ACTIVATION RANGES & RECOMMENDED Q-FORMATS (16-bit)")
+    print("=" * 65)
+    for name, abs_max in activation_stats.items():
+        m = int(np.ceil(np.log2(abs_max))) if abs_max > 1.0 else 0
+        n = 15 - m
+        print(f"{name:35s} | Abs Max: {abs_max:8.4f} | Int Bits (m): {m} | Format: Q{m}.{n}")
+    print("=" * 65)
 
 if __name__ == "__main__":
     main()

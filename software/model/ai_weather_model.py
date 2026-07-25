@@ -120,7 +120,7 @@ class NowcastNet(nn.Module):
             nn.Conv2d(last_hidden // 2, dynamic_channels, kernel_size=3, padding=1),
         )
 
-    def forward(self, x, static, forecast_steps=None, advection_prior=None):
+    def forward(self, x, static, forecast_steps=None, advection_prior=None, return_all_channels=False):
         """
         Args:
             x: Historical dynamic frames. Shape: (B, T_in, C_dynamic, H, W)
@@ -166,6 +166,8 @@ class NowcastNet(nn.Module):
             last_frame = pred  # feed prediction back in as next input
 
         outputs = torch.stack(outputs, dim=1)  # (B, T_out, dynamic_channels, H, W)
+        if return_all_channels:
+            return outputs  # (B, T_out, dynamic_channels, H, W) -- radar + satellite/IR
         # Radar is channel 0 of the dynamic channels -- that's what we nowcast.
         radar_pred = outputs[:, :, 0:1]  # (B, T_out, 1, H, W)
         return radar_pred
