@@ -53,7 +53,7 @@ def tanh(x):
 
 
 def gen_lut(func, filename):
-    x = np.linspace(-8.0,8.0,256)
+    x = -8.0 + (np.arange(256) + 0.5) * (16.0 / 256.0)
     y_float = func(x)
 
     y_int = np.round(y_float * 32768.0)
