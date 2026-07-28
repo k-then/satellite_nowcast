@@ -1,7 +1,7 @@
 // Converts a 1D pixel stream into a continuous 3x3 spatial window
 // using circular RAM buffers and horizontal shift registers.
 
-module line_buffer #(parameter DATA_WIDTH = 16, TILE_WIDTH = 32) 
+module line_buffer #(parameter DATA_WIDTH = 16, parameter TILE_WIDTH = 32) 
   (
     input logic clk, rst, valid_in, 
     input logic [DATA_WIDTH - 1:0] pixel_in, 

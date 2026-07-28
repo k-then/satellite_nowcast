@@ -1,4 +1,4 @@
-module tb_line_buffer_top;
+module tb_line_buffer_top
   parameter DATA_WIDTH = 16;
   parameter TILE_WIDTH = 8;
   parameter TILE_HEIGHT = 8;
