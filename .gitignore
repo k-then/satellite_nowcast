@@ -19,3 +19,9 @@ obj_dir/
 # checkpoints and forecasts
 checkpoints_v6/
 forecast_output_v6/
+
+# VSCode Settings
+.vscode/
+
+# Waveforms
+*.vcd

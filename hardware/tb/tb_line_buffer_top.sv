@@ -1,4 +1,5 @@
-module tb_line_buffer_top
+// Top Level AXI wrapper
+module tb_line_buffer_top; 
   parameter DATA_WIDTH = 16;
   parameter TILE_WIDTH = 8;
   parameter TILE_HEIGHT = 8;
@@ -41,7 +42,7 @@ module tb_line_buffer_top
 
   // Feeds the pixels
   initial begin
-    int pixel_cnt = 1;
+    pixel_cnt = 1;
 
     $dumpfile("dump.vcd");
     $dumpvars(0, tb_line_buffer);

@@ -1,0 +1,11 @@
+# synth.ys
+read_verilog -sv line_buffer.sv
+read_verilog -sv line_buffer_top.sv
+
+hierarchy -top line_buffer_top
+
+# Run Xilinx techmap pass
+synth_xilinx -top line_buffer_top
+
+# Print resource utilization
+stat
