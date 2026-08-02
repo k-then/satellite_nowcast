@@ -24,6 +24,7 @@ void tick(Vline_buffer_top* top, VerilatedVcdC* tfp, vluint64_t& main_time) {
 
     top->clk = 1;
     top->eval();
+    top->eval();  // extra eval to let combinational assigns fully settle
     if (tfp) tfp->dump(main_time);
     main_time += 5;
 }
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
     // Reset Sequence
     top->rst = 1;
     top->s_axis_tvalid = 0;
+    top->s_axis_tlast  = 0;
     top->m_axis_trdy   = 1; 
     top->s_axis_tdata  = 0;
 
@@ -62,8 +64,9 @@ int main(int argc, char** argv) {
     }
 
     int valid_window_count = 0;
+    bool flushed_early = false;
 
-    // 1. DRIVE INPUT STREAM
+    // DRIVE INPUT STREAM
     for (int r = 0; r < TILE_HEIGHT; ++r) {
         for (int c = 0; c < TILE_WIDTH; ++c) {
             
@@ -72,14 +75,25 @@ int main(int argc, char** argv) {
 
             top->s_axis_tdata  = packed_tdata;
             top->s_axis_tvalid = 1;
+            top->s_axis_tlast  = (r == TILE_HEIGHT - 1 && c == TILE_WIDTH - 1) ? 1 : 0;
 
             bool handshaked = false;
+
             while (!handshaked) {
                 tick(top.get(), tfp.get(), main_time);
 
                 // Sample valid output when downstream is ready
                 if (top->m_axis_tvalid && top->m_axis_trdy) {
                     valid_window_count++;
+
+                    // Catch tlast here too -- on the final pixel, the FSM can
+                    // enter FLUSHING and run the entire flush sequence to
+                    // completion *inside this same handshake loop*, before
+                    // s_axis_trdy ever goes high again. Missing this check
+                    // here means the flush pulse is silently skipped.
+                    if (top->m_axis_tlast) {
+                        flushed_early = true;
+                    }
 
                     if (valid_window_count == 35) {
                         std::cout << "\n======================================================\n";
@@ -110,28 +124,45 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                // Check if input beat was accepted by DUT
+                // Sample input ready AFTER clock edge
                 if (top->s_axis_trdy) {
                     handshaked = true;
                 }
             }
-            
-            // Clear valid signal after handshake completes
-            top->s_axis_tvalid = 0;
         }
     }
 
-    // Drain remaining pipeline cycles
-    top->s_axis_tdata  = 0;
-    top->s_axis_tvalid = 1; // Keep valid high to push non-border pipeline cycles through
-
-    for (int i = 0; i < 200 && valid_window_count < 1156; ++i) {
-        tick(top.get(), tfp.get(), main_time);
-        if (top->m_axis_tvalid && top->m_axis_trdy) {
-            valid_window_count++;
-        }
-    }
+    // Clear input interface signals after active frame transfer completes
     top->s_axis_tvalid = 0;
+    top->s_axis_tlast  = 0;
+    top->s_axis_tdata  = 0;
+
+    if (flushed_early) {
+        std::cout << "\n[TB] tlast was already observed during the final pixel's "
+                     "handshake -- flush completed inline, skipping dedicated flush loop.\n";
+    } else {
+        // Autonomous Flush Loop (only needed if tlast wasn't already caught above)
+        bool flushed = false;
+        int timeout = 0;
+
+        while (!flushed) {
+            tick(top.get(), tfp.get(), main_time);
+
+            if (top->m_axis_tvalid && top->m_axis_trdy) {
+                valid_window_count++;
+            }
+
+            if (top->m_axis_tlast && top->m_axis_tvalid && top->m_axis_trdy) {
+                flushed = true;
+            }
+
+            // Watchdog to prevent terminal freeze
+            if (++timeout > 5000) {
+                std::cerr << "\n[TB ERROR] Flushing timed out! Check line_buffer_top FSM tlast logic.\n";
+                break;
+            }
+        }
+    }
 
     std::cout << "\n[TB] Simulation Complete!\n";
     std::cout << "[TB] Total Valid 3x3 Windows Produced: " << valid_window_count << "\n";
